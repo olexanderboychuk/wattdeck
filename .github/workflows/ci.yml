@@ -22,6 +22,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # The pinned channel in rust-toolchain.toml is what the runner uses. This
+      # step records the toolchain each OS actually ran, which is the evidence
+      # for the claim that 1.88.0 compiles this tree on all three.
+      - run: rustc --version
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
