@@ -1,0 +1,143 @@
+name: release
+on:
+  push:
+    tags: 'v*.*.*'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release --target ${{ matrix.target }}
+      - name: package
+        shell: bash
+        run: |
+          set -eu
+          tag=${GITHUB_REF#refs/tags/}
+          asset="wattdeck-$tag-${{ matrix.target }}.${{ matrix.ext }}"
+          stage="dist"
+          mkdir -p "$stage"
+          if [ "${{ matrix.ext }}" = "tar.gz" ]; then
+            cp "target/${{ matrix.target }}/release/wattdeck" "$stage/"
+            cp README.md LICENSE "$stage/"
+            tar -czf "$asset" -C "$stage" wattdeck README.md LICENSE
+          else
+            cp "target/${{ matrix.target }}/release/wattdeck.exe" "$stage/"
+            cp README.md LICENSE "$stage/"
+            # Compress-Archive with a wildcard stores the files at the archive
+            # root, which is what install.ps1 expands (wattdeck.exe at the root).
+            # Verified on PowerShell 7.7.0 by compressing a stage dir and reading
+            # the zip's entries.
+            powershell -NoProfile -Command "Compress-Archive -Path 'stage/*' -DestinationPath '${asset}'"
+          fi
+          sha256sum "$asset" | sed "s# .*\$#  $asset#" > "$asset.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asset-${{ matrix.target }}
+          path: |
+            wattdeck-*
+            *.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: asset-*
+          merge-multiple: true
+      - name: sums and notes
+        run: |
+          set -eu
+          cat *.sha256 > SHA256SUMS.txt
+          cat > notes.md <<'EOF'
+          Three binaries, built on GitHub's native runners for that tag:
+          `x86_64-unknown-linux-gnu` (Linux x86_64), `aarch64-apple-darwin` (macOS Apple
+          silicon), `x86_64-pc-windows-msvc` (Windows x86_64). No ARM Windows, no ARM
+          Linux, no Intel Mac: those targets are not built.
+
+          Install:
+          `curl -sSL https://raw.githubusercontent.com/olexanderboychuk/wattdeck/main/install.sh | sh`
+          (macOS and Linux) and
+          `irm https://raw.githubusercontent.com/olexanderboychuk/wattdeck/main/install.ps1 | iex`
+          (Windows). Both scripts verify the asset's SHA256 against `SHA256SUMS.txt`
+          before extracting, install to a user directory, and never use sudo.
+
+          Unverified, stated rather than glossed: macOS Keychain and Windows Credential
+          Manager behaviour (the `keyring` crate supports both by design; no macOS or
+          Windows machine has run wattdeck); the Windows console; the glibc floor of the
+          Linux binary (built on the runner's glibc, so it needs that glibc or newer);
+          `cargo install --git`.
+          EOF
+      - name: create the release
+        run: |
+          set -eu
+          tag=${GITHUB_REF#refs/tags/}
+          gh release create "$tag" \
+            wattdeck-*.tar.gz wattdeck-*.zip SHA256SUMS.txt \
+            --title "$tag" --notes-file notes.md --verify-tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  verify-install:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            shell: bash
+          - os: macos-latest
+            shell: bash
+          - os: windows-latest
+            shell: pwsh
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: matrix.shell == 'bash'
+        run: |
+          set -eu
+          tag=${GITHUB_REF#refs/tags/}
+          dest=$(mktemp -d)
+          out=$(WATTDECK_INSTALL_DIR="$dest" sh install.sh)
+          echo "$out"
+          test -x "$dest/wattdeck"
+          case "$out" in *wattdeck*) ;; *) echo "no version line: $out"; exit 1 ;; esac
+          version=$("$dest/wattdeck" --version)
+          # `wattdeck --version` prints the crate version, not the tag
+          # (tests/cli.rs:19-30 pins `wattdeck 0.1.0`), so the assertion
+          # compares the version against the tag with the leading `v` stripped,
+          # exactly as the pwsh step does.
+          case "$version" in
+            "wattdeck ${tag#v}") ;;
+            *) echo "version line is not the tag: $version (tag $tag)"; exit 1 ;;
+          esac
+        shell: bash
+      - if: matrix.shell == 'pwsh'
+        run: |
+          $tag = $env:GITHUB_REF -replace 'refs/tags/', ''
+          $dest = Join-Path ([System.IO.Path]::GetTempPath()) 'wattdeck-verify'
+          # A bare script name is not resolved against the current directory by
+          # PowerShell (verified on PowerShell 7.7.0: `& install.ps1` is "not
+          # recognized"), so the path is the explicit relative one.
+          ./install.ps1 -InstallDir $dest
+          Test-Path (Join-Path $dest 'wattdeck.exe') | ForEach-Object { if (-not $_) { throw 'no binary' } }
+          $v = & (Join-Path $dest 'wattdeck.exe') --version
+          if ($v -notmatch [regex]::Escape($tag.TrimStart('v'))) { throw "version $v is not the tag $tag" }
+        shell: pwsh

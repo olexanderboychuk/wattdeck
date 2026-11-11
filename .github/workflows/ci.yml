@@ -1,0 +1,48 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            shelltest: true
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            shelltest: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            shelltest: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-targets
+      - run: cargo build --release --target ${{ matrix.target }}
+      - if: matrix.shelltest
+        run: sh tests/install_sh.sh
+      - if: matrix.shelltest
+        run: sh tests/install_ps1.sh
+      - if: matrix.shelltest
+        run: python3 -m pip install --quiet pillow
+      - if: matrix.shelltest
+        run: sh tests/render_frame.sh
+      - if: matrix.shelltest
+        run: sh -c 'sha256sum target/${{ matrix.target }}/release/wattdeck | head -c 12'
+      # The toolchain the pinned channel ships on the runner has shellcheck as an
+      # apt package; installing it here keeps the lint step from failing on a
+      # missing tool. `pwsh` on ubuntu-latest and windows-latest is unverified
+      # until the first run: install.ps1 -SelfTest is the Windows-side check.
+      - if: matrix.shelltest
+        run: sudo apt-get install -y shellcheck
+      - if: matrix.shelltest
+        run: shellcheck install.sh tests/install_sh.sh tests/install_ps1.sh
+      - if: matrix.os == 'windows-latest'
+        run: pwsh -NoProfile -File install.ps1 -SelfTest
