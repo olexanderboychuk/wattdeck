@@ -1,3 +1,12 @@
 [toolchain]
-channel = "1.88.0"
+# The floor is set by the dependencies, not by a preference: rusqlite 0.41.1 and
+# uuid 1.29.2 both declare rust-version 1.89.0, so cargo's own MSRV check fails
+# on 1.88.0 (this is the message CI printed on 2026-11-11: "rusqlite@0.41.1
+# requires rustc 1.89.0"). The top requirement among the locked packages is
+# 1.89.0; 1.88.0 is only enough for keyring 4.2.0, libsqlite3-sys 0.39.1 and
+# time 0.3.55. 1.89.0 is a released stable toolchain
+# (https://static.rust-lang.org/dist/rust-1.89.0-x86_64-unknown-linux-gnu.tar.gz
+# answers 200), and rustup installs it from that shape, which is what the
+# runners do with this file.
+channel = "1.89.0"
 components = ["rustfmt", "clippy"]

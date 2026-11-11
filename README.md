@@ -67,12 +67,15 @@ make           # full verify: build, tests, fmt --check, clippy
 make install   # into ~/.local/bin (override with PREFIX=…)
 ```
 
-Requirements: Rust (1.88.0 is the pinned channel in `rust-toolchain.toml`,
-which is the `keyring` crate's `rust-version`; the project builds on newer
-toolchains too), and on Linux a C toolchain for the bundled SQLite build. GNU
-Make is convenient, not required. `make help` lists the targets: `make run`
-(mock), `make run-live` (real devices), `make run-debug` (mock + masked log
-file), `make test-install`, `make screenshots`.
+Requirements: Rust. `rust-toolchain.toml` pins 1.89.0, and that number is the
+floor the dependencies set, not a preference: rusqlite 0.41.1 and uuid 1.29.2
+declare `rust-version = "1.89.0"`, so cargo's own MSRV check refuses 1.88.0 (CI
+printed `rusqlite@0.41.1 requires rustc 1.89.0` on 2026-11-11, which is why the
+pin moved). Newer toolchains build it too — development is on 1.99.0. On Linux
+you need a C toolchain for the bundled SQLite build. GNU Make is convenient, not
+required. `make help` lists the targets: `make run` (mock), `make run-live`
+(real devices), `make run-debug` (mock + masked log file), `make test-install`,
+`make screenshots`.
 
 Then run the wizard once:
 
@@ -320,11 +323,11 @@ because no verified command list exists for them in this project.
 
 Unverified, stated rather than glossed: macOS Keychain and Windows Credential
 Manager behaviour, the Windows console, the glibc floor of the Linux binary,
-`cargo install --git` before the repo is pushed, and the absence of the targets
-that are not built (ARM Windows, ARM Linux, Intel Mac). The CI job on
-`ubuntu-latest`, `macos-latest` and `windows-latest` is the verification for
-the macOS and Windows claims, and for the pinned 1.88.0 toolchain; before the
-first green CI run on those runners, they are claims.
+`cargo install --git`, and the absence of the targets that are not built (ARM
+Windows, ARM Linux, Intel Mac). The CI job on `ubuntu-latest`, `macos-latest`
+and `windows-latest` is the verification for the macOS and Windows claims and
+for the pinned 1.89.0 toolchain; before the first green CI run on those
+runners, they are claims.
 
 ## License
 
