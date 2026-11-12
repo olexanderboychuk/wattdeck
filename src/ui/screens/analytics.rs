@@ -11,13 +11,14 @@ use crate::telemetry::aggregator::{
 use crate::telemetry::history::{integrate_energy, mean_power, peak_powers};
 use crate::ui::layout::Areas;
 use crate::ui::screens::{kv, section};
+use crate::ui::snapshot::Snapshot;
 
 /// A gap longer than 15 minutes is a device that stopped reporting, not energy.
 const GAP_SECS: i64 = 900;
 use crate::ui::widgets;
 use crate::utils::formatting::{grouped, pad, plural, watts, wh};
 
-pub fn draw(app: &App, frame: &mut Frame, areas: Areas) {
+pub fn draw(app: &App, snap: &Snapshot, frame: &mut Frame, areas: Areas) {
     let theme = &app.theme;
     let Some(d) = app.selected_device() else {
         crate::ui::screens::placeholder(app, frame, areas.main, "select a device");
@@ -195,5 +196,5 @@ pub fn draw(app: &App, frame: &mut Frame, areas: Areas) {
     }
     // The chart band is shared with the dashboard so the same history is visible in
     // both views.
-    widgets::power_graph::history(app, frame, areas.history);
+    widgets::power_graph::history(app, snap, frame, areas.history);
 }

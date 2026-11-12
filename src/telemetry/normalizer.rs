@@ -118,6 +118,20 @@ pub fn derive(state: &mut DeviceSnapshot) {
         state.power.solar_in_w = Some(solar[0] + solar[1]);
         state.power.dc_in_w = Some(0.0);
     }
+    // Apparent power, VA, from the V/A pair the inverter reports. A volt-ampere
+    // figure is a different quantity from active power, so it is kept in its own
+    // field and never added to a watt total.
+    state.power.ac_out_va = state
+        .power
+        .ac_out_volts
+        .zip(state.power.ac_out_amps)
+        .map(|(v, a)| v * a);
+    state.power.ac_in_va = state
+        .power
+        .ac_in_volts
+        .zip(state.power.ac_in_amps)
+        .map(|(v, a)| v * a);
+
     // Ports are listed individually; the UI shows them and the aggregate is not
     // re-derived, so totals never double-count.
     let mut ports = Vec::new();
@@ -220,14 +234,17 @@ fn apply_delta2(state: &mut DeviceSnapshot, key: &str, f: Option<f64>, value: &V
         "bms_bmsStatus.designCap" => b.design_cap_mah = f,
         "bms_bmsStatus.fullCap" => b.full_cap_mah = f,
         "bms_bmsStatus.remainCap" => b.remain_cap_mah = f,
-        "bms_bmsStatus.remainTime" => b.remain_time_min = f,
+        "bms_bmsStatus.remainTime" => b.bms_remain_min = f,
         "bms_bmsStatus.chgState" => b.chg_state_raw = f,
-        "bms_emsStatus.chgState" | "pd.chgDsgState" => b.chg_state_raw = b.chg_state_raw.or(f),
-        // The device reports one of these depending on charge/discharge state; the
-        // most recent one is what the device's own LCD shows.
-        "bms_emsStatus.chgRemainTime" | "bms_emsStatus.dsgRemainTime" | "pd.remainTime" => {
-            b.remain_time_min = f
-        }
+        "bms_emsStatus.chgState" => b.chg_state_raw = b.chg_state_raw.or(f),
+        // `pd.chgDsgState` is the code the device shows on its own screen:
+        // 0 = discharging, 1 = charging. It is kept apart from the BMS state codes.
+        "pd.chgDsgState" => b.pd_chg_dsg_raw = f,
+        // The three runtime counters mean different things and the device keeps the
+        // inactive one pinned at 5999 (99 h 59 m), so they are stored one per key.
+        "bms_emsStatus.chgRemainTime" => b.chg_remain_min = f,
+        "bms_emsStatus.dsgRemainTime" => b.dsg_remain_min = f,
+        "pd.remainTime" => b.lcd_remain_min = f,
         "bms_emsStatus.maxChargeSoc" => s.max_charge_soc = f,
         "bms_emsStatus.minDsgSoc" => s.min_discharge_soc = f,
         "pd.minAcSoc" | "pd.minAcoutSoc" => s.min_discharge_soc = s.min_discharge_soc.or(f),
@@ -314,7 +331,10 @@ fn apply_prefixed(state: &mut DeviceSnapshot, key: &str, f: Option<f64>, value: 
         "cellTemp" => state.battery.cell_temps = array_values(value),
         "maxChargeSoc" => state.settings.max_charge_soc = f,
         "minDsgSoc" => state.settings.min_discharge_soc = f,
-        "chgRemainTime" | "dsgRemainTime" => state.battery.remain_time_min = f,
+        "chgRemainTime" => state.battery.chg_remain_min = f,
+        "dsgRemainTime" => state.battery.dsg_remain_min = f,
+        "remainTime" => state.battery.bms_remain_min = f,
+        "chgDsgState" => state.battery.pd_chg_dsg_raw = f,
         "wattsInSum" => state.power.total_in_w = f,
         "wattsOutSum" => state.power.total_out_w = f,
         "inputWatts" if key.starts_with("inv.") => state.power.ac_in_w = f,
@@ -346,9 +366,8 @@ fn apply_flat(state: &mut DeviceSnapshot, key: &str, f: Option<f64>, _value: &Va
             state.settings.fast_charge_watts = state.settings.fast_charge_watts.or(f)
         }
         "cmsChgDsgState" => state.battery.chg_state_raw = f,
-        "cmsChgRemTime" | "cmsDsgRemTime" | "bmsChgRemTime" | "bmsDsgRemTime" => {
-            state.battery.remain_time_min = f
-        }
+        "cmsChgRemTime" | "bmsChgRemTime" => state.battery.chg_remain_min = f,
+        "cmsDsgRemTime" | "bmsDsgRemTime" => state.battery.dsg_remain_min = f,
         "cmsMaxChgSoc" => state.settings.max_charge_soc = f,
         "cmsMinDsgSoc" => state.settings.min_discharge_soc = f,
         "bmsMaxCellTemp" | "bmsMaxMosTemp" => state.battery.max_cell_temp_c = f,

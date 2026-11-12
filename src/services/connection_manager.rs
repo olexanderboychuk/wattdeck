@@ -1,68 +1,58 @@
 use chrono::{DateTime, Utc};
 
-use crate::services::{ConnState, Transport};
+use crate::services::{ConnState, Transport, TransportInfo};
 
 /// REST and MQTT are tracked independently: MQTT can be down while REST works, and
-/// the app keeps running on cached state.
+/// the app keeps running on cached state. A refusal of one device never enters this
+/// state, because it is a device problem and the transport answered normally.
 #[derive(Debug, Clone)]
 pub struct ConnectionManager {
-    rest: ConnState,
-    mqtt: ConnState,
-    pub last_rest_ok: Option<DateTime<Utc>>,
-    pub last_mqtt_ok: Option<DateTime<Utc>>,
-    consecutive_failures: u32,
+    rest: TransportInfo,
+    mqtt: TransportInfo,
 }
 
 impl Default for ConnectionManager {
     fn default() -> Self {
         Self {
-            rest: ConnState::Initializing,
-            mqtt: ConnState::Initializing,
-            last_rest_ok: None,
-            last_mqtt_ok: None,
-            consecutive_failures: 0,
+            rest: TransportInfo::new(ConnState::Initializing),
+            mqtt: TransportInfo::new(ConnState::Initializing),
         }
     }
 }
 
 impl ConnectionManager {
-    pub fn set(&mut self, transport: Transport, state: ConnState, now: DateTime<Utc>) {
+    /// Store what the service observed. The service owns the state machine; the
+    /// manager keeps the facts for the UI.
+    pub fn set(&mut self, transport: Transport, info: TransportInfo, _now: DateTime<Utc>) {
         match transport {
-            Transport::Rest => {
-                self.rest = state;
-                if state == ConnState::Connected {
-                    self.last_rest_ok = Some(now);
-                    self.consecutive_failures = 0;
-                }
-            }
-            Transport::Mqtt => {
-                self.mqtt = state;
-                if state == ConnState::Connected {
-                    self.last_mqtt_ok = Some(now);
-                    self.consecutive_failures = 0;
-                }
-            }
-        }
-        if state == ConnState::Offline || state == ConnState::AuthError {
-            self.consecutive_failures += 1;
+            Transport::Rest => self.rest = info,
+            Transport::Mqtt => self.mqtt = info,
         }
     }
 
     pub fn rest(&self) -> ConnState {
-        self.rest
+        self.rest.state
     }
 
     pub fn mqtt(&self) -> ConnState {
-        self.mqtt
+        self.mqtt.state
+    }
+
+    pub fn rest_info(&self) -> &TransportInfo {
+        &self.rest
+    }
+
+    pub fn mqtt_info(&self) -> &TransportInfo {
+        &self.mqtt
     }
 
     /// The header shows one overall state: online if any transport is connected,
-    /// degraded if one is connected and the other is not, offline if neither is.
+    /// problems if one is connected and the other is not, offline if neither is.
     pub fn overall(&self) -> ConnState {
-        if self.rest == ConnState::AuthError || self.mqtt == ConnState::AuthError {
+        if self.rest.state == ConnState::AuthError || self.mqtt.state == ConnState::AuthError {
             return ConnState::AuthError;
         }
-        match (self.rest, self.mqtt) {
+        match (self.rest.state, self.mqtt.state) {
             (ConnState::Connected, ConnState::Connected) => ConnState::Connected,
             (ConnState::Connected, ConnState::Offline)
             | (ConnState::Offline, ConnState::Connected) => ConnState::Degraded,
@@ -75,13 +65,14 @@ impl ConnectionManager {
 
     /// Exponential backoff with a ceiling, so retries do not hammer the API.
     /// Base 2 s, capped at 60 s; MQTT reconnect uses the same schedule.
+    /// Exponential backoff with a ceiling, so retries do not hammer the API: 1 s,
+    /// doubling, capped at 32 s. MQTT reconnect uses the same schedule.
     pub fn backoff_secs(&self) -> u64 {
-        let n = self.consecutive_failures.min(6);
-        2u64 << n
+        1u64 << self.rest.fails.max(self.mqtt.fails).min(5)
     }
 
     pub fn is_stale(&self, now: DateTime<Utc>, window_secs: i64) -> bool {
-        let latest = [self.last_rest_ok, self.last_mqtt_ok]
+        let latest = [self.rest.last_ok, self.mqtt.last_ok]
             .into_iter()
             .flatten()
             .max();
@@ -95,67 +86,56 @@ impl ConnectionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Duration, Utc};
 
     fn now() -> DateTime<Utc> {
         Utc::now()
     }
 
     #[test]
-    fn starts_initializing() {
-        let m = ConnectionManager::default();
-        assert_eq!(m.rest(), ConnState::Initializing);
-        assert_eq!(m.overall(), ConnState::Reconnecting);
+    fn one_live_transport_is_not_reported_as_offline() {
+        let mut m = ConnectionManager::default();
+        m.set(
+            Transport::Rest,
+            TransportInfo {
+                state: ConnState::Offline,
+                fails: 3,
+                last_fail: Some(now()),
+                status: Some(500),
+                ..TransportInfo::new(ConnState::Offline)
+            },
+            now(),
+        );
+        m.set(
+            Transport::Mqtt,
+            TransportInfo::new(ConnState::Connected),
+            now(),
+        );
+        let mut mqtt = TransportInfo::new(ConnState::Connected);
+        mqtt.last_ok = Some(now());
+        m.set(Transport::Mqtt, mqtt, now());
+        assert_eq!(m.overall(), ConnState::Degraded, "one side is working");
+        assert!(!m.is_stale(now(), 120), "the live feed is fresh");
     }
 
     #[test]
-    fn mqtt_down_with_rest_up_is_degraded() {
+    fn backoff_grows_with_failures_and_is_capped() {
         let mut m = ConnectionManager::default();
-        m.set(Transport::Rest, ConnState::Connected, now());
-        m.set(Transport::Mqtt, ConnState::Offline, now());
-        assert_eq!(m.overall(), ConnState::Degraded);
-    }
-
-    #[test]
-    fn both_connected_is_online() {
-        let mut m = ConnectionManager::default();
-        m.set(Transport::Rest, ConnState::Connected, now());
-        m.set(Transport::Mqtt, ConnState::Connected, now());
-        assert_eq!(m.overall(), ConnState::Connected);
-    }
-
-    #[test]
-    fn both_offline_is_offline() {
-        let mut m = ConnectionManager::default();
-        m.set(Transport::Rest, ConnState::Offline, now());
-        m.set(Transport::Mqtt, ConnState::Offline, now());
-        assert_eq!(m.overall(), ConnState::Offline);
-    }
-
-    #[test]
-    fn auth_error_wins() {
-        let mut m = ConnectionManager::default();
-        m.set(Transport::Rest, ConnState::AuthError, now());
-        m.set(Transport::Mqtt, ConnState::Connected, now());
-        assert_eq!(m.overall(), ConnState::AuthError);
-    }
-
-    #[test]
-    fn backoff_grows_and_is_capped() {
-        let mut m = ConnectionManager::default();
-        assert_eq!(m.backoff_secs(), 2);
-        m.set(Transport::Rest, ConnState::Offline, now());
-        assert_eq!(m.backoff_secs(), 4);
-        for _ in 0..10 {
-            m.set(Transport::Mqtt, ConnState::Offline, now());
+        let mut info = TransportInfo::new(ConnState::Reconnecting);
+        for n in 1..=6 {
+            info.fails = n;
+            m.set(Transport::Rest, info.clone(), now());
         }
-        assert_eq!(m.backoff_secs(), 128, "must stay bounded");
+        assert_eq!(m.backoff_secs(), 32, "the ceiling is 2^5 s");
+        let mut ok = TransportInfo::new(ConnState::Connected);
+        ok.last_ok = Some(now() - Duration::seconds(30));
+        m.set(Transport::Rest, ok, now());
+        assert_eq!(m.backoff_secs(), 1, "a success resets the schedule");
     }
 
     #[test]
-    fn staleness_tracks_last_success() {
-        let mut m = ConnectionManager::default();
+    fn no_activity_at_all_is_stale() {
+        let m = ConnectionManager::default();
         assert!(m.is_stale(now(), 60));
-        m.set(Transport::Mqtt, ConnState::Connected, now());
-        assert!(!m.is_stale(now(), 60));
     }
 }

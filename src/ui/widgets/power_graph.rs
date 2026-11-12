@@ -1,83 +1,28 @@
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Sparkline};
+use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, Paragraph, Sparkline};
 
 use crate::app::App;
-use crate::telemetry::history::{mean_power, peak_powers};
-use crate::utils::formatting::{pad, watts};
+use crate::ui::snapshot::Snapshot;
+use crate::ui::theme::Theme;
+use crate::ui::widgets::pad_right;
+use crate::utils::formatting::{elapsed, watts};
 
-/// Share-of-total bars for the inputs and outputs, scaled to the largest channel.
-pub fn distribution(app: &App, frame: &mut Frame, area: Rect) {
+/// The power history band: the live numbers, the peaks, and the chart itself. The
+/// chart is drawn when there are four rows of plot area and 24 columns, sparklines
+/// when there is less, and a plain statement when the sample window is too short
+/// to plot.
+pub fn history(app: &App, snap: &Snapshot, frame: &mut Frame, area: Rect) {
     let theme = &app.theme;
-    // Bars draws a block, a bar row and a label row; a shorter area overflows.
-    if area.height < 5 || area.width < 8 {
+    if area.height < 4 || area.width < 12 {
         return;
     }
-    let Some(d) = app.selected_device() else {
-        return;
-    };
-    let block = Block::default()
-        .title(" DISTRIBUTION ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let p = &d.power;
-    let rows = [
-        ("Solar", p.solar_in_w, theme.solar()),
-        ("AC in", p.ac_in_w, theme.accent()),
-        ("DC in", p.dc_in_w, theme.secondary()),
-        ("AC out", p.ac_out_w, theme.accent()),
-        ("USB out", p.usb_out_w, theme.secondary()),
-        ("12V out", p.car_out_w, theme.secondary()),
-    ];
-    let scale = rows
-        .iter()
-        .filter_map(|(_, v, _)| *v)
-        .fold(0.0f64, f64::max)
-        .max(1.0);
-    let bar_w = (inner.width.saturating_sub(18)).clamp(6, 28) as usize;
-
-    let mut lines = Vec::new();
-    for (label, value, colour) in rows {
-        let v = value.unwrap_or(0.0);
-        if value.is_none() {
-            continue;
-        }
-        lines.push(Line::from(vec![
-            Span::styled(pad(label, 7), Style::default().fg(colour)),
-            Span::styled(theme.bar(bar_w, v / scale), Style::default().fg(colour)),
-            Span::styled(
-                format!(" {}", watts(value)),
-                Style::default().fg(theme.text()),
-            ),
-        ]));
-    }
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "no power channels reported",
-            Style::default().fg(theme.secondary()),
-        )));
-    }
-    frame.render_widget(Paragraph::new(lines), inner);
-}
-
-/// Sparkline band for the recent power history. Values are instantaneous watts; the
-/// label shows peak and mean so the chart is not read as energy.
-pub fn history(app: &App, frame: &mut Frame, area: Rect) {
-    let theme = &app.theme;
-    // Two sparkline rows plus the block border and the label row.
-    if area.height < 4 || area.width < 8 {
+    if snap.device.is_none() {
         return;
     }
-    let Some(d) = app.selected_device() else {
-        return;
-    };
-    let samples = app.history_for(&d.sn).ordered();
     let block = Block::default()
         .title(" POWER HISTORY ")
         .borders(Borders::ALL)
@@ -85,94 +30,208 @@ pub fn history(app: &App, frame: &mut Frame, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if samples.len() < 2 {
+    // Row 0 is always the live reading, so the chart's right edge is labelled.
+    frame.render_widget(
+        Paragraph::new(summary_line(snap, theme, inner.width)),
+        Rect { height: 1, ..inner },
+    );
+
+    let plot = Rect {
+        y: inner.y + 1,
+        height: inner.height - 1,
+        ..inner
+    };
+
+    if snap.samples.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "insufficient history: not enough samples to chart (collecting)",
-                Style::default().fg(theme.warning()),
+                "collecting samples",
+                Style::default().fg(theme.secondary()),
             )),
-            inner,
+            plot,
         );
         return;
     }
+    // One sample is drawn as a single bar; a chart with one point on a time axis
+    // says nothing, so the narrow form is used until there are two.
+    if snap.samples.len() >= 2 && plot.height >= 4 && plot.width >= 26 {
+        draw_chart(snap, theme, frame, plot);
+    } else {
+        draw_sparklines(snap, theme, frame, plot);
+    }
+}
 
-    // Values are watts clamped to the u64 range the Sparkline widget accepts.
-    let in_data: Vec<u64> = samples
+/// Live values, peaks and the window the chart covers, with the live numbers
+/// coloured to match the two series.
+fn summary_line(snap: &Snapshot, theme: &Theme, width: u16) -> Line<'static> {
+    let live = vec![
+        Span::styled(
+            format!(
+                "live IN {} ({})  ",
+                watts(snap.totals.in_w),
+                Snapshot::mark(snap.totals.in_src)
+            ),
+            Style::default().fg(theme.accent()),
+        ),
+        Span::styled(
+            format!(
+                "OUT {} ({})",
+                watts(snap.totals.out_w),
+                Snapshot::mark(snap.totals.out_src)
+            ),
+            Style::default().fg(theme.warning()),
+        ),
+    ];
+    let n = snap.samples.len();
+    let right = vec![Span::styled(
+        format!(
+            " peak IN {} OUT {} · {} over {} · edge {}",
+            watts(snap.peak_in),
+            watts(snap.peak_out),
+            if n == 1 {
+                "1 sample".to_string()
+            } else {
+                format!("{n} samples")
+            },
+            elapsed(snap.window_secs()),
+            snap.latest
+                .map(|s| s.t.format("%H:%M:%S").to_string())
+                .unwrap_or_else(|| "--".to_string()),
+        ),
+        Style::default().fg(theme.secondary()),
+    )];
+    pad_right(live, right, width)
+}
+
+fn draw_chart(snap: &Snapshot, theme: &Theme, frame: &mut Frame, area: Rect) {
+    let t0 = snap.samples[0].t;
+    let span = (snap.samples[snap.samples.len() - 1].t - t0)
+        .num_seconds()
+        .max(1) as f64;
+    let peak = snap
+        .peak_in
+        .unwrap_or(0.0)
+        .max(snap.peak_out.unwrap_or(0.0))
+        .max(1.0);
+    // Round the y bound up to the next 100 W so the top line is not clipped.
+    let ymax = (peak / 100.0).ceil() * 100.0;
+
+    let in_pts: Vec<(f64, f64)> = snap
+        .samples
+        .iter()
+        .map(|s| ((s.t - t0).num_seconds() as f64, s.in_w.max(0.0)))
+        .collect();
+    let out_pts: Vec<(f64, f64)> = snap
+        .samples
+        .iter()
+        .map(|s| ((s.t - t0).num_seconds() as f64, s.out_w.max(0.0)))
+        .collect();
+
+    let mid = t0 + chrono::Duration::seconds((span / 2.0) as i64);
+    let axis_style = Style::default().fg(theme.secondary());
+    let chart = Chart::new(vec![
+        Dataset::default()
+            .name("IN")
+            .marker(symbols::Marker::Dot)
+            .data(&in_pts)
+            .style(Style::default().fg(theme.accent())),
+        Dataset::default()
+            .name("OUT")
+            .marker(symbols::Marker::Dot)
+            .data(&out_pts)
+            .style(Style::default().fg(theme.warning())),
+    ])
+    .x_axis(
+        Axis::default()
+            .bounds([0.0, span])
+            .labels(vec![
+                t0.format("%H:%M:%S").to_string(),
+                mid.format("%H:%M:%S").to_string(),
+                snap.samples[snap.samples.len() - 1]
+                    .t
+                    .format("%H:%M:%S")
+                    .to_string(),
+            ])
+            .style(axis_style),
+    )
+    .y_axis(
+        Axis::default()
+            .bounds([0.0, ymax])
+            .labels(vec![
+                "0".to_string(),
+                watts(Some(ymax / 2.0)),
+                watts(Some(ymax)),
+            ])
+            .style(axis_style),
+    );
+    frame.render_widget(chart, area);
+}
+
+/// The narrow fallback: two bar rows, one per series, labelled with mean and peak
+/// so the bars are not read as energy.
+fn draw_sparklines(snap: &Snapshot, theme: &Theme, frame: &mut Frame, area: Rect) {
+    let in_data: Vec<u64> = snap
+        .samples
         .iter()
         .map(|s| s.in_w.max(0.0).clamp(0.0, u16::MAX as f64) as u64)
         .collect();
-    let out_data: Vec<u64> = samples
+    let out_data: Vec<u64> = snap
+        .samples
         .iter()
         .map(|s| s.out_w.max(0.0).clamp(0.0, u16::MAX as f64) as u64)
         .collect();
 
-    let (peak_in, peak_out) = peak_powers(&samples);
-    let mean_in = mean_power(&samples, |s| s.in_w);
-    let mean_out = mean_power(&samples, |s| s.out_w);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Min(1)])
+        .split(area);
 
-    let rows = ratatui::layout::Layout::default()
-        .direction(ratatui::layout::Direction::Vertical)
-        .constraints([
-            ratatui::layout::Constraint::Min(1),
-            ratatui::layout::Constraint::Min(1),
-        ])
-        .split(inner);
-
-    let spark_in = Sparkline::default()
-        .data(&in_data)
-        .bar_set(if theme.unicode {
-            symbols::bar::NINE_LEVELS
-        } else {
-            symbols::bar::THREE_LEVELS
-        })
-        .style(Style::default().fg(theme.accent()));
-    frame.render_widget(spark_in, rows[0]);
-
-    let spark_out = Sparkline::default()
-        .data(&out_data)
-        .bar_set(if theme.unicode {
-            symbols::bar::NINE_LEVELS
-        } else {
-            symbols::bar::THREE_LEVELS
-        })
-        .style(Style::default().fg(theme.warning()));
-    frame.render_widget(spark_out, rows[1]);
-
-    // Labels sit at the right end of each sparkline row so the bars stay readable
-    // from the left.
-    let label_w = (inner.width as usize).min(34);
-    let label_area = ratatui::layout::Rect {
-        x: inner.x + inner.width - label_w as u16,
-        y: inner.y,
-        width: label_w as u16,
-        height: 1,
+    let bar_set = if theme.unicode {
+        symbols::bar::NINE_LEVELS
+    } else {
+        symbols::bar::THREE_LEVELS
     };
-    let label_in = Line::from(Span::styled(
-        format!(
-            "IN {} · peak {}",
-            watts(Some(mean_in)),
-            watts(Some(peak_in))
-        ),
-        Style::default().fg(theme.secondary()),
-    ));
     frame.render_widget(
-        Paragraph::new(label_in).style(Style::default().bg(theme.bg())),
-        label_area,
+        Sparkline::default()
+            .data(&in_data)
+            .bar_set(bar_set.clone())
+            .style(Style::default().fg(theme.accent())),
+        rows[0],
     );
-    let label_out = Line::from(Span::styled(
-        format!(
-            "OUT {} · peak {}",
-            watts(Some(mean_out)),
-            watts(Some(peak_out))
-        ),
-        Style::default().fg(theme.secondary()),
-    ));
-    let label_area2 = ratatui::layout::Rect {
-        y: inner.y + 1,
-        ..label_area
-    };
     frame.render_widget(
-        Paragraph::new(label_out).style(Style::default().bg(theme.bg())),
-        label_area2,
+        Sparkline::default()
+            .data(&out_data)
+            .bar_set(bar_set.clone())
+            .style(Style::default().fg(theme.warning())),
+        rows[1],
+    );
+
+    let label_w = (area.width as usize).min(40);
+    let label = Line::from(vec![
+        Span::styled(
+            format!(
+                "IN avg {} peak {} ",
+                watts(snap.mean_in),
+                watts(snap.peak_in)
+            ),
+            Style::default().fg(theme.accent()),
+        ),
+        Span::styled(
+            format!(
+                "OUT avg {} peak {}",
+                watts(snap.mean_out),
+                watts(snap.peak_out)
+            ),
+            Style::default().fg(theme.warning()),
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(label).style(Style::default().bg(theme.bg())),
+        Rect {
+            x: area.x + area.width - label_w as u16,
+            y: area.y,
+            width: label_w as u16,
+            height: 1,
+        },
     );
 }

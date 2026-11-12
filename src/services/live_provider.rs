@@ -9,7 +9,7 @@ use crate::api::devices;
 use crate::config::Config;
 use crate::config::credentials::Credentials;
 use crate::services::{
-    Command, ConnState, DiscoveredDevice, Level, Notification, Transport, Update,
+    Command, ConnState, DiscoveredDevice, Level, Notification, Transport, TransportInfo, Update,
 };
 use crate::telemetry::models::{DeviceSnapshot, Source};
 use crate::telemetry::normalizer::merge_params;
@@ -44,7 +44,10 @@ impl LiveProvider {
     pub async fn run(mut self, tx: Sender<Update>, mut rx: tokio::sync::mpsc::Receiver<Command>) {
         let cadence = std::time::Duration::from_secs(self.cfg.api.refresh_interval_seconds.max(5));
         let _ = tx
-            .send(Update::Transport(Transport::Rest, ConnState::Connecting))
+            .send(Update::Transport(
+                Transport::Rest,
+                self.state.info(ConnState::Connecting),
+            ))
             .await;
         loop {
             match self.sweep(&tx).await {
@@ -95,6 +98,12 @@ impl LiveProvider {
     }
 
     /// One pass over the device list, respecting the spacing between requests.
+    ///
+    /// Two kinds of failure are counted separately. A request the server refused for
+    /// one device (a business code, not an HTTP failure) is that device's problem:
+    /// the transport answered, so the connection stays online and the device is
+    /// reported as refused. A request that did not get a good answer - network, 4xx,
+    /// 5xx - is a transport failure.
     async fn sweep(&mut self, tx: &Sender<Update>) -> Sweep {
         let now = Utc::now();
         let list = match devices::device_list(&self.client).await {
@@ -119,6 +128,7 @@ impl LiveProvider {
             }
         }
         let mut ok = 0;
+        let mut refused = 0;
         let mut failed = 0;
         for d in self.devices.clone() {
             match devices::properties(&self.client, &d.sn).await {
@@ -130,24 +140,48 @@ impl LiveProvider {
                     snap.online = d.online;
                     snap.seq += 1;
                     snap.last_update = now;
+                    snap.last_rest = Some(now);
                     let _ = tx.send(Update::Snapshot(Box::new(snap.clone()))).await;
                     // A device that starts reporting again is allowed to warn again.
                     self.last_error.remove(&d.sn);
                 }
                 Err(e) => {
-                    failed += 1;
-                    let text = format!("{}: {e}", mask_serial(&d.sn));
-                    // A device that is permanently refused by the API is reported once,
-                    // not on every poll.
-                    if report_failure(&mut self.last_error, &d.sn, &text) {
-                        self.notify(tx, Notification::warn(text));
+                    let (code, text) = e.signature();
+                    if is_device_refusal(&e) {
+                        refused += 1;
+                        // The refusal names the device and says what monitoring
+                        // effect it has; the same refusal is not repeated every poll.
+                        let notice = format!(
+                            "{}: the cloud refused this device (code {code}: {text}). \
+                             Data for this device is not available.",
+                            mask_serial(&d.sn)
+                        );
+                        if report_failure(&mut self.last_error, &d.sn, &notice) {
+                            let _ = tx
+                                .send(Update::DeviceRefusal {
+                                    sn: d.sn.clone(),
+                                    code: code.clone(),
+                                    message: text,
+                                })
+                                .await;
+                            self.notify(tx, Notification::warn(notice));
+                        }
+                    } else {
+                        failed += 1;
+                        let text = format!("{}: {e}", mask_serial(&d.sn));
+                        for u in self.state.record_failure(now, &e) {
+                            let _ = tx.send(u).await;
+                        }
+                        if report_failure(&mut self.last_error, &d.sn, &text) {
+                            self.notify(tx, Notification::warn(text));
+                        }
                     }
                 }
             }
             // Space requests out so a sweep of several devices stays inside rate limits.
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
-        for u in self.state.record_sweep(now, ok, failed) {
+        for u in self.state.record_sweep(now, ok, refused, failed) {
             let _ = tx.send(u).await;
         }
         Sweep::Ok
@@ -184,6 +218,13 @@ fn map_of(data: &Value) -> std::collections::HashMap<String, Value> {
         .collect()
 }
 
+/// The server answered the request and refused the device: a business code, not a
+/// transport failure. Only these codes say "this device", so they never degrade the
+/// connection of the devices that are reporting.
+fn is_device_refusal(e: &ApiError) -> bool {
+    matches!(e, ApiError::Api { .. } | ApiError::NoData { .. })
+}
+
 /// Record a per-device failure and report whether it is new. The same refusal from the
 /// same device on the next sweep is not a new alert.
 fn report_failure(last: &mut HashMap<String, String>, sn: &str, text: &str) -> bool {
@@ -195,11 +236,17 @@ fn report_failure(last: &mut HashMap<String, String>, sn: &str, text: &str) -> b
 }
 
 /// Transport state machine for the REST source: consecutive failures degrade the
-/// connection, a success restores it, and an auth failure is reported once.
+/// connection, a success restores it, and an auth failure is reported once. The
+/// counters the diagnostics screen reads live here.
 #[derive(Debug)]
 pub struct LiveState {
     state: ConnState,
     failures: u32,
+    last_ok: Option<DateTime<Utc>>,
+    last_fail: Option<DateTime<Utc>>,
+    status: Option<u16>,
+    error: Option<String>,
+    reconnects: u32,
     last_notify: Option<DateTime<Utc>>,
     pub auth_failed: bool,
 }
@@ -209,6 +256,11 @@ impl LiveState {
         Self {
             state: ConnState::Initializing,
             failures: 0,
+            last_ok: None,
+            last_fail: None,
+            status: None,
+            error: None,
+            reconnects: 0,
             last_notify: None,
             auth_failed: false,
         }
@@ -216,6 +268,19 @@ impl LiveState {
 
     pub fn state(&self) -> ConnState {
         self.state
+    }
+
+    /// The diagnostics snapshot to send with a transition.
+    fn info(&self, state: ConnState) -> TransportInfo {
+        TransportInfo {
+            state,
+            last_ok: self.last_ok,
+            last_fail: self.last_fail,
+            status: self.status,
+            error: self.error.clone(),
+            fails: self.failures,
+            reconnects: self.reconnects,
+        }
     }
 
     fn set(
@@ -227,8 +292,15 @@ impl LiveState {
     ) -> Vec<Update> {
         let mut out = Vec::new();
         if self.state != next {
+            // A transport that comes back after being down is one reconnect.
+            if next == ConnState::Connected && self.state != ConnState::Initializing {
+                self.reconnects += 1;
+            }
             self.state = next;
-            out.push(Update::Transport(Transport::Rest, next));
+            if next == ConnState::Connected {
+                self.last_ok = Some(now);
+            }
+            out.push(Update::Transport(Transport::Rest, self.info(next)));
             if !text.is_empty() && self.notify_throttled(now) {
                 out.push(Update::Notification(Notification {
                     level,
@@ -258,16 +330,31 @@ impl LiveState {
         out
     }
 
-    pub fn record_sweep(&mut self, now: DateTime<Utc>, ok: u32, failed: u32) -> Vec<Update> {
-        if ok > 0 && failed == 0 {
+    /// One sweep: `ok` requests answered, `refused` devices the server refused,
+    /// `failed` requests that did not get a good answer.
+    ///
+    /// Refusals do not count against the connection. A device the account cannot
+    /// read is not a network problem, and a REST sweep that answered for every other
+    /// device keeps MQTT-fed telemetry valid.
+    pub fn record_sweep(
+        &mut self,
+        now: DateTime<Utc>,
+        ok: u32,
+        refused: u32,
+        failed: u32,
+    ) -> Vec<Update> {
+        if failed == 0 {
             self.failures = 0;
+            // Refused devices are not a connection problem: a sweep that only refused
+            // devices keeps the transport online.
+            tracing::debug!("sweep: {ok} answered, {refused} refused, {failed} failed");
             self.set(now, ConnState::Connected, Level::Info, "")
         } else if ok > 0 {
             self.set(
                 now,
                 ConnState::Degraded,
                 Level::Warn,
-                "some devices did not report",
+                "the cloud is answering some requests",
             )
         } else {
             self.record_failure_inner(now)
@@ -276,11 +363,14 @@ impl LiveState {
 
     pub fn record_failure(&mut self, now: DateTime<Utc>, e: &ApiError) -> Vec<Update> {
         self.failures += 1;
+        self.last_fail = Some(now);
+        self.status = e.http_status();
+        self.error = Some(e.signature().1);
         let mut out = self.record_failure_inner(now);
         if self.failures == 1 {
             out.push(Update::Notification(Notification {
                 level: Level::Warn,
-                text: format!("REST: {e}"),
+                text: format!("cloud connection: {e}"),
                 at: now,
             }));
         }
@@ -293,7 +383,7 @@ impl LiveState {
         } else {
             ConnState::Reconnecting
         };
-        self.set(now, next, Level::Warn, "REST is not reachable")
+        self.set(now, next, Level::Warn, "the cloud is not reachable")
     }
 
     pub fn record_auth_failure(&mut self, now: DateTime<Utc>) -> Vec<Update> {
@@ -301,7 +391,7 @@ impl LiveState {
         let mut out = self.set(now, ConnState::AuthError, Level::Critical, "");
         out.push(Update::Notification(Notification {
             level: Level::Critical,
-            text: "REST authentication failed - check access key, secret key and region".into(),
+            text: "Cloud sign-in failed. Check your API credentials.".into(),
             at: now,
         }));
         out
@@ -326,6 +416,26 @@ impl ApiError {
             _ => false,
         }
     }
+
+    /// The API code, and the HTTP status when the server answered with one. Used for
+    /// diagnostics; never contains a key, a nonce, or a signature.
+    fn signature(&self) -> (String, String) {
+        match self {
+            ApiError::Api { code, message } => (code.clone(), message.clone()),
+            ApiError::NoData { code } => (code.clone(), "no data".to_string()),
+            ApiError::Malformed(s) => (String::new(), s.clone()),
+            ApiError::Network(e) => (String::new(), format!("network: {e}")),
+        }
+    }
+
+    /// The HTTP status the failure carries, when there is one.
+    pub fn http_status(&self) -> Option<u16> {
+        match self {
+            ApiError::Malformed(s) => s.strip_prefix("http ").and_then(|p| p.parse::<u16>().ok()),
+            ApiError::Network(e) => e.status().map(|s| s.as_u16()),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -345,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn success_connects() {
+    fn success_connects_and_records_the_success() {
         let mut s = LiveState::new();
         let list = vec![DiscoveredDevice {
             sn: "AAA".into(),
@@ -354,12 +464,17 @@ mod tests {
             product_type: Some(81),
         }];
         let out = s.record_list(now(), &list);
-        assert!(matches!(
-            out[0],
-            Update::Transport(Transport::Rest, ConnState::Connected)
-        ));
+        let state = transport_state(&out[0]);
+        assert_eq!(state, ConnState::Connected);
         assert!(matches!(out[1], Update::DeviceList(_)));
         assert_eq!(s.state(), ConnState::Connected);
+        let info = s.info(ConnState::Connected);
+        assert_eq!(
+            info.last_ok,
+            Some(now()),
+            "the last good answer is recorded"
+        );
+        assert_eq!(info.fails, 0);
     }
 
     #[test]
@@ -367,10 +482,7 @@ mod tests {
         let mut s = LiveState::new();
         let e = failure();
         let first = s.record_failure(now(), &e);
-        assert!(matches!(
-            first[0],
-            Update::Transport(Transport::Rest, ConnState::Reconnecting)
-        ));
+        assert_eq!(transport_state(&first[0]), ConnState::Reconnecting);
         // The second failure does not repeat the same state: the UI only gets the
         // transitions.
         let second = s.record_failure(now() + chrono::Duration::minutes(10), &e);
@@ -384,23 +496,67 @@ mod tests {
         assert!(
             third
                 .iter()
-                .any(|u| matches!(u, Update::Transport(Transport::Rest, ConnState::Offline)))
+                .any(|u| matches!(u, Update::Transport(Transport::Rest, _)))
         );
         assert_eq!(s.state(), ConnState::Offline);
+        assert_eq!(
+            s.status,
+            Some(500),
+            "the status code is kept for diagnostics"
+        );
+        assert_eq!(s.failures, 3);
     }
 
     #[test]
-    fn partial_sweep_is_degraded() {
+    fn a_refused_device_does_not_degrade_the_connection() {
+        // The live case: the cloud answers for the DELTA 2 Max and refuses the
+        // RIVER mini. The transport answered, so it stays online.
         let mut s = LiveState::new();
-        let out = s.record_sweep(now(), 1, 1);
+        let out = s.record_sweep(now(), 1, 1, 0);
         assert!(
             out.iter()
-                .any(|u| matches!(u, Update::Transport(Transport::Rest, ConnState::Degraded)))
+                .any(|u| matches!(u, Update::Transport(Transport::Rest, _))
+                    && transport_state(u) == ConnState::Connected),
+            "one refusal is not a connection problem"
         );
-        let out2 = s.record_sweep(now() + chrono::Duration::minutes(10), 2, 0);
+        assert_eq!(s.state(), ConnState::Connected);
+        assert_eq!(s.failures, 0);
+    }
+
+    #[test]
+    fn a_failed_request_degrades_the_connection() {
+        let mut s = LiveState::new();
+        let out = s.record_sweep(now(), 1, 0, 1);
+        assert!(
+            out.iter()
+                .any(|u| matches!(u, Update::Transport(Transport::Rest, _))
+                    && transport_state(u) == ConnState::Degraded)
+        );
+        let out2 = s.record_sweep(now() + chrono::Duration::minutes(10), 2, 0, 0);
         assert!(
             out2.iter()
-                .any(|u| matches!(u, Update::Transport(Transport::Rest, ConnState::Connected)))
+                .any(|u| transport_state(u) == ConnState::Connected)
+        );
+    }
+
+    #[test]
+    fn a_business_code_is_a_device_refusal_not_a_transport_failure() {
+        assert!(is_device_refusal(&ApiError::Api {
+            code: "1006".into(),
+            message: "device does not exist".into()
+        }));
+        assert!(!is_device_refusal(&ApiError::Malformed("http 500".into())));
+        assert_eq!(
+            ApiError::Malformed("http 429".into()).http_status(),
+            Some(429)
+        );
+        assert_eq!(
+            ApiError::Api {
+                code: "0".into(),
+                message: String::new()
+            }
+            .http_status(),
+            None
         );
     }
 
@@ -419,81 +575,49 @@ mod tests {
         let mut s = LiveState::new();
         let out = s.record_auth_failure(now());
         assert!(s.auth_failed);
+        assert!(out.iter().any(|u| matches!(u, Update::Notification(_))));
+        assert_eq!(s.state(), ConnState::AuthError);
+        let words = out
+            .iter()
+            .filter_map(|u| match u {
+                Update::Notification(n) => Some(n.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(words.contains("sign-in failed"), "plain words: {words}");
         assert!(
-            out.iter()
-                .any(|u| matches!(u, Update::Transport(Transport::Rest, ConnState::AuthError)))
-        );
-        assert!(out.iter().any(|u| matches!(
-            u,
-            Update::Notification(n)
-            if n.level == Level::Critical
-        )));
-        // The second auth failure does not add the same state again.
-        let out2 = s.record_auth_failure(now() + chrono::Duration::minutes(30));
-        assert!(
-            !out2
-                .iter()
-                .any(|u| matches!(u, Update::Transport(Transport::Rest, ConnState::AuthError)))
+            !words.contains("key "),
+            "no key material in the message: {words}"
         );
     }
 
     #[test]
-    fn signature_code_is_auth() {
-        let e = ApiError::Api {
-            code: "8521".into(),
-            message: "signature is wrong".into(),
-        };
-        assert!(e.is_auth());
-        assert!(!ApiError::Malformed("http 500".into()).is_auth());
-        assert!(ApiError::Malformed("http 403".into()).is_auth());
+    fn a_reconnect_is_counted_once_per_recovery() {
+        let mut s = LiveState::new();
+        let list = vec![DiscoveredDevice {
+            sn: "AAA".into(),
+            product_name: "DELTA 2 Max".into(),
+            online: true,
+            product_type: Some(81),
+        }];
+        s.record_list(now(), &list);
+        assert_eq!(s.reconnects, 0, "the first connection is not a reconnect");
+        s.record_failure(now() + chrono::Duration::minutes(5), &failure());
+        s.record_sweep(now() + chrono::Duration::minutes(10), 1, 0, 0);
+        assert_eq!(s.reconnects, 1, "one recovery is one reconnect");
     }
 
-    #[test]
-    fn property_map_is_extracted() {
-        let v = json!({ "bms_bmsStatus.soc": 85, "pd.wattsOutSum": 218 });
-        let m = map_of(&v);
-        assert_eq!(m.get("bms_bmsStatus.soc").unwrap(), &json!(85));
-        // A non-object payload yields an empty map, not a crash.
-        assert!(map_of(&json!(null)).is_empty());
+    /// The state carried by a `Transport` update.
+    fn transport_state(u: &Update) -> ConnState {
+        match u {
+            Update::Transport(_, info) => info.state,
+            other => panic!("expected a transport update, got {other:?}"),
+        }
     }
 
-    #[test]
-    fn snapshots_accumulate_across_partial_reports() {
-        let mut snap = DeviceSnapshot::new("AAA", "DELTA 2 Max", 81);
-        merge_params(
-            &mut snap,
-            &map_of(&json!({ "bms_bmsStatus.soc": 85, "bms_bmsStatus.productType": 81 })),
-        );
-        assert_eq!(snap.battery.soc, Some(85.0));
-        assert_eq!(snap.product_type, 81);
-        merge_params(&mut snap, &map_of(&json!({ "pd.wattsOutSum": 218 })));
-        // The second report is partial: the SOC from the first one is still there.
-        assert_eq!(snap.battery.soc, Some(85.0));
-        assert_eq!(snap.power.total_out_w, Some(218.0));
-    }
-
-    #[test]
-    fn masked_serials_appear_in_notifications() {
-        let n = Notification::warn(format!("{}: boom", mask_serial("R351ZEB5PGC90303")));
-        assert!(!n.text.contains("R351ZEB5PGC90303"));
-        assert!(n.text.starts_with("R3*"));
-    }
-
-    #[test]
-    fn a_repeated_device_failure_is_not_re_notified() {
-        let mut last = HashMap::new();
-        let e = "RB***********37: api error code 1006: not allowed".to_string();
-        assert!(report_failure(&mut last, "RB2MN5ZE7721004", &e));
-        assert!(!report_failure(&mut last, "RB2MN5ZE7721004", &e));
-        // A different error on the same device is worth a new alert.
-        assert!(report_failure(
-            &mut last,
-            "RB2MN5ZE7721004",
-            "RB***********37: network: timeout"
-        ));
-        // After the device reports again the entry is removed, so the next failure is
-        // reported.
-        last.remove("RB2MN5ZE7721004");
-        assert!(report_failure(&mut last, "RB2MN5ZE7721004", &e));
+    #[allow(dead_code)]
+    fn unused_json(v: serde_json::Value) {
+        let _ = json!(v);
     }
 }

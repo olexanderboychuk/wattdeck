@@ -1,5 +1,6 @@
 pub mod layout;
 pub mod screens;
+pub mod snapshot;
 pub mod theme;
 pub mod widgets;
 
@@ -11,16 +12,19 @@ use crate::app::{App, Screen};
 
 /// One render pass. Called only when the UI is dirty, so idle terminals do no work.
 pub fn render(app: &App, frame: &mut Frame) {
+    // One snapshot for the whole frame, so no two panels can show numbers from
+    // different readings.
+    let snap = snapshot::capture(app);
     let areas = layout::compute(frame.area(), &app.screen, app.devices.len());
     widgets::header::draw(app, frame, areas.header);
     match app.screen {
-        Screen::Dashboard => screens::dashboard::draw(app, frame, areas),
-        Screen::Devices => screens::devices::draw(app, frame, areas),
-        Screen::DeviceDetails => screens::device_details::draw(app, frame, areas),
-        Screen::Analytics => screens::analytics::draw(app, frame, areas),
-        Screen::Alerts => screens::alerts_screen::draw(app, frame, areas),
-        Screen::Settings => screens::settings::draw(app, frame, areas),
-        Screen::Help => screens::help::draw(app, frame, areas),
+        Screen::Dashboard => screens::dashboard::draw(app, &snap, frame, areas),
+        Screen::Devices => screens::devices::draw(app, &snap, frame, areas),
+        Screen::DeviceDetails => screens::device_details::draw(app, &snap, frame, areas),
+        Screen::Analytics => screens::analytics::draw(app, &snap, frame, areas),
+        Screen::Alerts => screens::alerts_screen::draw(app, &snap, frame, areas),
+        Screen::Settings => screens::settings::draw(app, &snap, frame, areas),
+        Screen::Help => screens::help::draw(app, &snap, frame, areas),
     }
     widgets::footer::draw(app, frame, areas.footer);
     // The confirmation dialog sits over the screen, so the command the user is

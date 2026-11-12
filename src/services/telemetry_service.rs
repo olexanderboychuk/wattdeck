@@ -4,7 +4,9 @@ use chrono::Utc;
 use serde_json::Value;
 use tokio::sync::mpsc::Sender;
 
-use crate::services::{Command, ConnState, DiscoveredDevice, Notification, Transport, Update};
+use crate::services::{
+    Command, ConnState, DiscoveredDevice, Notification, Transport, TransportInfo, Update,
+};
 use crate::telemetry::models::{DeviceSnapshot, Source};
 use crate::telemetry::normalizer;
 
@@ -364,6 +366,9 @@ pub struct MockSim {
     tick: u64,
     mqtt_down_for: u64,
     pub snapshots: Vec<DeviceSnapshot>,
+    /// MQTT facts for the diagnostics screen, kept the way the real transport keeps
+    /// them.
+    mqtt_info: TransportInfo,
 }
 
 impl MockSim {
@@ -379,6 +384,7 @@ impl MockSim {
             rng: Lcg::new(seed),
             tick: 0,
             mqtt_down_for: 0,
+            mqtt_info: TransportInfo::new(ConnState::Initializing),
             snapshots,
         }
     }
@@ -466,8 +472,22 @@ impl MockSim {
         } else {
             ConnState::Connected
         };
-        out.push(Update::Transport(Transport::Rest, ConnState::Connected));
-        out.push(Update::Transport(Transport::Mqtt, mqtt_state));
+        if mqtt_state == ConnState::Connected {
+            if self.mqtt_info.state == ConnState::Reconnecting {
+                self.mqtt_info.reconnects += 1;
+            }
+            self.mqtt_info.last_ok = Some(Utc::now());
+            self.mqtt_info.fails = 0;
+        } else {
+            self.mqtt_info.last_fail = Some(Utc::now());
+            self.mqtt_info.fails += 1;
+        }
+        self.mqtt_info.state = mqtt_state;
+        out.push(Update::Transport(
+            Transport::Rest,
+            TransportInfo::new(ConnState::Connected),
+        ));
+        out.push(Update::Transport(Transport::Mqtt, self.mqtt_info.clone()));
 
         for (i, dev) in self.devices.iter_mut().enumerate() {
             dev.online = dev.product_type != 72; // RIVER stays offline in the mock

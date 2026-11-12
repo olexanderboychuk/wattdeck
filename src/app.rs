@@ -23,6 +23,11 @@ use crate::utils::formatting::mask_serial;
 /// Minimum spacing between two database queries for the same range.
 pub const QUERY_THROTTLE_SECS: i64 = 5;
 
+/// A station that is doing nothing sends the same numbers every sample. Identical
+/// samples are not stored; the last identical sample is stored again this often, so
+/// history says the station is still alive.
+pub const HEARTBEAT_SECS: i64 = 600;
+
 /// The facts alerts are evaluated from: serial, SOC, temperature, total output
 /// power, online. Grouped so the evaluation loop stays readable.
 type SnapshotFacts = (String, Option<f64>, Option<f64>, Option<f64>, bool);
@@ -134,6 +139,8 @@ pub struct App {
     pub command_tx: Option<tokio::sync::mpsc::Sender<Command>>,
     history: HashMap<String, History>,
     last_sample: HashMap<String, DateTime<Utc>>,
+    /// The sample last stored per device, so an unchanged report is not stored twice.
+    last_same: HashMap<String, Sample>,
     last_online: HashMap<String, bool>,
     emitted: HashMap<(String, AlertKind), DateTime<Utc>>,
     /// Samples read back from the history database, per device, oldest first.
@@ -178,12 +185,13 @@ impl App {
             running: true,
             mock,
             scenario,
-            status: String::from("starting"),
+            status: String::new(),
             theme: Theme::new(color_mode),
             range: 2,
             command_tx: None,
             history: HashMap::new(),
             last_sample: HashMap::new(),
+            last_same: HashMap::new(),
             last_online: HashMap::new(),
             emitted: HashMap::new(),
             device_filter: String::new(),
@@ -260,7 +268,6 @@ impl App {
                 for d in list {
                     self.register_device(&d);
                 }
-                self.status = format!("{} devices discovered", self.devices.len());
             }
             Update::Snapshot(snap) => {
                 let sn = snap.sn.clone();
@@ -277,6 +284,13 @@ impl App {
                         d.online = snap.online;
                         d.seq = snap.seq;
                         d.last_update = snap.last_update;
+                        // Which transport answered, so the device screen can show the
+                        // last message from each.
+                        match snap.source {
+                            Source::Mqtt => d.last_mqtt = Some(snap.last_update),
+                            Source::Rest => d.last_rest = Some(snap.last_update),
+                            _ => {}
+                        }
                         if snap.product_type != 0 {
                             d.product_type = snap.product_type;
                         }
@@ -314,18 +328,26 @@ impl App {
                 self.maybe_sample(&sn);
                 self.evaluate_alerts();
             }
-            Update::Transport(transport, state) => {
+            Update::DeviceRefusal { sn, code, message } => {
+                // The cloud answered and refused this one device, so the connection
+                // stays as it is; only this device's data is unavailable.
+                if let Some(d) = self.devices.iter_mut().find(|d| d.sn == sn) {
+                    d.last_refusal = Some(format!("code {code}: {message}"));
+                }
+            }
+            Update::Transport(transport, info) => {
                 let prev = match transport {
                     Transport::Rest => self.connection.rest(),
                     Transport::Mqtt => self.connection.mqtt(),
                 };
-                self.connection.set(transport, state, self.now);
+                let state = info.state;
+                self.connection.set(transport, info, self.now);
                 if prev != ConnState::Connected && state == ConnState::Connected {
                     self.push_alert(
                         AlertKind::TransportUp,
                         Level::Info,
                         "",
-                        format!("{transport:?} online"),
+                        format!("{} is online", transport.label()),
                     );
                 }
                 if prev == ConnState::Connected && state != ConnState::Connected {
@@ -333,7 +355,7 @@ impl App {
                         AlertKind::TransportDown,
                         Level::Warn,
                         "",
-                        format!("{transport:?} {state:?}"),
+                        format!("{}: {}", transport.label(), state.label()),
                     );
                 }
                 if state == ConnState::AuthError {
@@ -341,7 +363,7 @@ impl App {
                         AlertKind::AuthError,
                         Level::Critical,
                         "",
-                        "authentication failed".to_string(),
+                        "sign-in failed. Check your API credentials.",
                     );
                 }
             }
@@ -419,14 +441,23 @@ impl App {
         let Some(d) = self.devices.iter().find(|d| d.sn == sn) else {
             return;
         };
-        let sample = Sample {
-            t: self.now,
-            soc: d.battery.soc.unwrap_or(0.0),
-            in_w: d.power.total_in_w.unwrap_or(0.0),
-            out_w: d.power.total_out_w.unwrap_or(0.0),
-            solar_w: d.power.solar_in_w.unwrap_or(0.0),
-            temp_c: d.battery.temp_c.unwrap_or(0.0),
+        // Sampling needs a measurement. A device that has reported nothing is not a
+        // device measuring zero, so nothing is stored.
+        let Some(sample) = Sample::from_device(self.now, d) else {
+            return;
         };
+        let unchanged = self
+            .last_same
+            .get(sn)
+            .map(|last| last.same_measurement(&sample))
+            .unwrap_or(false);
+        // An identical measurement is stored again only on the heartbeat, so history
+        // records that the station is still answering without filling the database
+        // with the same reading every interval.
+        if unchanged && (self.now - last).num_seconds() < HEARTBEAT_SECS {
+            return;
+        }
+        self.last_same.insert(sn.to_string(), sample);
         self.history
             .entry(sn.to_string())
             .or_insert_with(|| History::new(self.config.history.memory_samples))
@@ -799,10 +830,14 @@ impl App {
     }
 
     pub fn stale(&self) -> bool {
-        self.connection.is_stale(
-            self.now,
-            self.config.api.refresh_interval_seconds as i64 * 2,
-        )
+        self.connection
+            .is_stale(self.now, self.stale_window_secs() as i64)
+    }
+
+    /// The window past which a device's last measurement counts as stale: twice the
+    /// cloud refresh interval, so one missed poll is not an alarm.
+    pub fn stale_window_secs(&self) -> f64 {
+        self.config.api.refresh_interval_seconds as f64 * 2.0
     }
 
     /// The source of the newest device data. A degraded transport that is still
@@ -1139,6 +1174,8 @@ mod tests {
     use super::*;
 
     use crate::config::settings::HistoryConfig;
+    use crate::services::TransportInfo;
+    use crate::telemetry::models::DeviceState;
     use crate::utils::formatting::temp;
 
     fn app() -> App {
@@ -1668,8 +1705,14 @@ mod tests {
     #[test]
     fn transport_transitions_alert() {
         let mut a = app();
-        a.apply_update(Update::Transport(Transport::Mqtt, ConnState::Connected));
-        a.apply_update(Update::Transport(Transport::Mqtt, ConnState::Reconnecting));
+        a.apply_update(Update::Transport(
+            Transport::Mqtt,
+            TransportInfo::new(ConnState::Connected),
+        ));
+        a.apply_update(Update::Transport(
+            Transport::Mqtt,
+            TransportInfo::new(ConnState::Reconnecting),
+        ));
         assert!(
             a.alerts
                 .iter()
@@ -1756,9 +1799,15 @@ mod tests {
         let mut a = app();
         a.mock = false;
         assert_eq!(a.source_label(), "OFFLINE");
-        a.apply_update(Update::Transport(Transport::Rest, ConnState::Connected));
+        a.apply_update(Update::Transport(
+            Transport::Rest,
+            TransportInfo::new(ConnState::Connected),
+        ));
         assert_eq!(a.source_label(), "REST");
-        a.apply_update(Update::Transport(Transport::Mqtt, ConnState::Connected));
+        a.apply_update(Update::Transport(
+            Transport::Mqtt,
+            TransportInfo::new(ConnState::Connected),
+        ));
         assert_eq!(a.source_label(), "MQTT");
     }
 
@@ -1770,7 +1819,10 @@ mod tests {
         let mut d = snap("AAA", 50.0, 100.0, 20.0);
         d.source = Source::Rest;
         a.apply_update(Update::Snapshot(Box::new(d)));
-        a.apply_update(Update::Transport(Transport::Rest, ConnState::Degraded));
+        a.apply_update(Update::Transport(
+            Transport::Rest,
+            TransportInfo::new(ConnState::Degraded),
+        ));
         assert_eq!(a.source_label(), "REST");
     }
 
@@ -1908,6 +1960,7 @@ mod tests {
                 out_w: 0.0,
                 solar_w: 0.0,
                 temp_c: 25.0,
+                bat_w: -100.0,
             });
         // The database returns the same instant plus one the memory window has lost.
         // The writer answers with the key it stores under.
@@ -1921,6 +1974,7 @@ mod tests {
                     out_w: 0.0,
                     solar_w: 0.0,
                     temp_c: 25.0,
+                    bat_w: -100.0,
                 },
                 Sample {
                     t: older,
@@ -1929,6 +1983,7 @@ mod tests {
                     out_w: 100.0,
                     solar_w: 200.0,
                     temp_c: 28.0,
+                    bat_w: 200.0,
                 },
             ],
         ));
@@ -2000,7 +2055,13 @@ mod tests {
         a.config.history.sample_interval_seconds = 0;
         for i in 0..10 {
             a.tick(a.now + chrono::Duration::seconds(i));
-            a.apply_update(Update::Snapshot(Box::new(snap("SN1", 50.0, 100.0, 20.0))));
+            // Each report is a different measurement, so every one is a row.
+            a.apply_update(Update::Snapshot(Box::new(snap(
+                "SN1",
+                50.0 + i as f64,
+                100.0,
+                20.0,
+            ))));
         }
         let behind = a
             .alerts
@@ -2021,5 +2082,135 @@ mod tests {
         assert_eq!(last.kind, AlertKind::Credential);
         assert_eq!(last.sn, "system", "a state alert has no device");
         assert!(last.text.contains("wattdeck setup"), "{}", last.text);
+    }
+
+    #[test]
+    fn identical_reports_are_stored_once_then_on_the_heartbeat() {
+        // MQTT repeats the same properties when a station is doing nothing. One
+        // measurement is one row; the last row is stored again on the heartbeat, so
+        // history says the station is still answering.
+        let mut a = app();
+        a.config.history.sample_interval_seconds = 1;
+        a.apply_update(Update::DeviceList(vec![DiscoveredDevice {
+            sn: SN.into(),
+            product_name: "DELTA 2 Max".into(),
+            online: true,
+            product_type: Some(81),
+        }]));
+        let t0 = Utc::now();
+        for i in 0..12 {
+            a.tick(t0 + chrono::Duration::seconds(i));
+            a.apply_update(Update::Snapshot(Box::new(snap(SN, 50.0, 236.0, 238.0))));
+        }
+        assert_eq!(
+            a.history_for(SN).len(),
+            1,
+            "twelve identical reports are one row"
+        );
+        a.tick(t0 + chrono::Duration::seconds(HEARTBEAT_SECS));
+        a.apply_update(Update::Snapshot(Box::new(snap(SN, 50.0, 236.0, 238.0))));
+        assert_eq!(
+            a.history_for(SN).len(),
+            2,
+            "the heartbeat stores the row again"
+        );
+        a.tick(t0 + chrono::Duration::seconds(HEARTBEAT_SECS + 1));
+        a.apply_update(Update::Snapshot(Box::new(snap(SN, 51.0, 236.0, 238.0))));
+        assert_eq!(
+            a.history_for(SN).len(),
+            3,
+            "a changed measurement is a new row"
+        );
+    }
+
+    #[test]
+    fn a_clouds_refusal_marks_one_device_not_the_connection() {
+        // The RIVER mini case: the cloud answered for the account and refused this
+        // one device. The transport that answered is healthy, so a MQTT feed that is
+        // delivering stays healthy.
+        let mut a = app();
+        a.now = Utc::now();
+        a.apply_update(Update::DeviceList(vec![DiscoveredDevice {
+            sn: SN.into(),
+            product_name: "RIVER mini Plus".into(),
+            online: true,
+            product_type: Some(71),
+        }]));
+        a.apply_update(Update::Transport(
+            Transport::Rest,
+            TransportInfo::new(ConnState::Connected),
+        ));
+        a.apply_update(Update::Transport(
+            Transport::Mqtt,
+            TransportInfo::new(ConnState::Connected),
+        ));
+        a.apply_update(Update::DeviceRefusal {
+            sn: SN.to_string(),
+            code: "1006".to_string(),
+            message: "device refusal".to_string(),
+        });
+        let d = a.selected_device().expect("the device is listed");
+        assert_eq!(
+            d.state(a.now, a.stale_window_secs()),
+            DeviceState::Unsupported,
+            "the refusal is the device's state, not the connection's"
+        );
+        assert_eq!(
+            d.last_refusal.as_deref(),
+            Some("code 1006: device refusal"),
+            "the cloud's words are kept verbatim"
+        );
+        assert_eq!(
+            a.connection.rest(),
+            ConnState::Connected,
+            "one device's refusal does not degrade the transport"
+        );
+    }
+
+    #[test]
+    fn history_is_read_back_from_the_database_after_a_restart() {
+        // A restart loses the in-memory ring. The chart draws what the database
+        // holds, so a fresh app asks for the range it is showing.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("history.sqlite");
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Update>(16);
+        let store =
+            crate::storage::spawn(db.clone(), HistoryConfig::default(), tx).expect("writer");
+        let mut first = app();
+        first.set_storage(store.clone());
+        first.config.history.sample_interval_seconds = 0;
+        // Hours of history, oldest first, all before the restart.
+        let t0 = Utc::now() - chrono::Duration::seconds(10800);
+        for i in 0..4 {
+            first.tick(t0 + chrono::Duration::seconds(i * 3600));
+            first.apply_update(Update::Snapshot(Box::new(snap(
+                SN,
+                50.0 + i as f64 * 10.0,
+                240.0,
+                120.0,
+            ))));
+        }
+        // The writer is a plain thread; give it a moment to commit the batch.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        // The restart: a new app, the same database, nothing in memory.
+        let mut second = app();
+        second.set_storage(store);
+        second.now = Utc::now();
+        second.range = 3; // 24 hours
+        assert_eq!(second.range_samples(SN).len(), 0, "the ring buffer is gone");
+        second.request_history(SN);
+        let answer = rx.blocking_recv().expect("the writer answers the query");
+        second.apply_update(answer);
+        let rows = second.range_samples(SN);
+        assert_eq!(rows.len(), 4, "the rows in the database are the history");
+        assert_eq!(
+            (rows[3].t - rows[0].t).num_seconds(),
+            10800,
+            "oldest first, three hours apart"
+        );
+        assert!(
+            second.range_covered(SN),
+            "hours of span cover the 24 h range"
+        );
     }
 }

@@ -6,10 +6,12 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::App;
 use crate::services::ConnState;
+use crate::ui::widgets::pad_right;
 use crate::utils::formatting::elapsed;
 
-/// The top line: the app's own name, the mock badge, and the connection states.
-/// Split out of `draw` so the header text is testable without a terminal.
+/// The top line: the app's own name and version, the mock badge, and every
+/// connection state, each in its own semantic colour. Split out of `draw` so the
+/// header text is testable without a terminal.
 /// wattdeck is the app; the vendor name has no business being in the app's title.
 pub fn title(app: &App) -> Vec<Span<'static>> {
     let theme = &app.theme;
@@ -20,12 +22,18 @@ pub fn title(app: &App) -> Vec<Span<'static>> {
         ConnState::Offline | ConnState::AuthError => theme.critical(),
         _ => theme.secondary(),
     };
-    let mut top: Vec<Span> = vec![Span::styled(
-        "WATTDECK",
-        Style::default()
-            .fg(theme.accent())
-            .add_modifier(Modifier::BOLD),
-    )];
+    let mut top: Vec<Span> = vec![
+        Span::styled(
+            "WATTDECK",
+            Style::default()
+                .fg(theme.accent())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" {}", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(theme.secondary()),
+        ),
+    ];
     if app.mock {
         top.push(Span::styled(
             " MOCK",
@@ -34,15 +42,19 @@ pub fn title(app: &App) -> Vec<Span<'static>> {
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    top.push(Span::styled(
-        format!(" ● {} ", overall.label()),
-        Style::default()
-            .fg(status_colour)
-            .add_modifier(Modifier::BOLD),
-    ));
+    // The two transports say the state in full; the summary word is only worth
+    // space when something is not right.
+    if overall != ConnState::Connected {
+        top.push(Span::styled(
+            format!(" {}", overall.label()),
+            Style::default()
+                .fg(status_colour)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     for (label, state) in [
-        ("REST", app.connection.rest()),
-        ("MQTT", app.connection.mqtt()),
+        ("cloud", app.connection.rest()),
+        ("live data", app.connection.mqtt()),
     ] {
         let colour = match state {
             ConnState::Connected => theme.charging(),
@@ -52,24 +64,17 @@ pub fn title(app: &App) -> Vec<Span<'static>> {
             _ => theme.secondary(),
         };
         top.push(Span::styled(
-            format!("{label} {} ", state.label()),
+            format!(" {label} {}", state.label()),
             Style::default().fg(colour),
         ));
     }
     top
 }
 
-/// Two-line header: identity and connection state, then device/selection freshness.
-pub fn draw(app: &App, frame: &mut Frame, area: Rect) {
+/// The second line: how many devices the account has, which one is on screen, and
+/// how old its numbers are.
+pub fn status_line(app: &App) -> Vec<Span<'static>> {
     let theme = &app.theme;
-    let top = title(app);
-    frame.render_widget(Paragraph::new(Line::from(top)), area);
-
-    if area.height < 2 {
-        return;
-    }
-    // The transport columns already state where the data comes from, so live mode
-    // adds no source label; the MOCK badge is the mock-mode marker.
     let fresh = app
         .freshness()
         .map(elapsed)
@@ -78,15 +83,7 @@ pub fn draw(app: &App, frame: &mut Frame, area: Rect) {
         .selected_device()
         .map(|d| d.product_name.clone())
         .unwrap_or_else(|| "no device".to_string());
-    let criticals = app.unacknowledged_criticals();
-    let alert_colour = if criticals > 0 {
-        theme.critical()
-    } else if app.alert_count() > 0 {
-        theme.warning()
-    } else {
-        theme.secondary()
-    };
-    let bottom = Line::from(vec![
+    vec![
         Span::styled(
             format!(" DEVICES {} ", app.devices.len()),
             Style::default().fg(theme.text()),
@@ -103,15 +100,62 @@ pub fn draw(app: &App, frame: &mut Frame, area: Rect) {
                 theme.secondary()
             }),
         ),
-        Span::styled(
+    ]
+}
+
+/// Active alerts, and the wall-clock time of the render, both pinned to the right
+/// edge so they sit in the same columns every frame.
+pub fn right_line(app: &App) -> Vec<Span<'static>> {
+    let theme = &app.theme;
+    let criticals = app.unacknowledged_criticals();
+    let alert_colour = if criticals > 0 {
+        theme.critical()
+    } else if app.alert_count() > 0 {
+        theme.warning()
+    } else {
+        theme.secondary()
+    };
+    let mut right = Vec::new();
+
+    if criticals > 0 {
+        right.push(Span::styled(
+            format!("ALERTS {} CRITICAL ", app.alert_count()),
+            Style::default()
+                .fg(alert_colour)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else if app.alert_count() > 0 {
+        right.push(Span::styled(
             format!("ALERTS {} ", app.alert_count()),
             Style::default().fg(alert_colour),
-        ),
-        Span::styled(
-            app.status.to_string(),
-            Style::default().fg(theme.secondary()),
-        ),
-    ]);
+        ));
+    }
+    right.push(Span::styled(
+        format!("{} UTC ", app.now.format("%H:%M:%S")),
+        Style::default().fg(theme.secondary()),
+    ));
+    right
+}
+
+/// Two-line header: identity and connection state, then device/selection freshness
+/// with the clock and the alert count at the right edge.
+pub fn draw(app: &App, frame: &mut Frame, area: Rect) {
+    let top = pad_right(title(app), right_line(app), area.width);
+    frame.render_widget(Paragraph::new(top), area);
+
+    if area.height < 2 {
+        return;
+    }
+    // The transport columns already state where the data comes from, so live mode
+    // adds no source label; the MOCK badge is the mock-mode marker.
+    let mut left = status_line(app);
+    left.push(Span::styled(
+        app.status.to_string(),
+        Style::default().fg(app.theme.secondary()),
+    ));
+    // The alert count and clock live on the top line, so the bottom line shows the
+    // status text alone at the right edge when the two fit.
+    let bottom = Line::from(left);
     frame.render_widget(
         Paragraph::new(bottom),
         Rect {
@@ -153,5 +197,25 @@ mod tests {
         let t = top_text(&app(false));
         assert!(t.starts_with("WATTDECK"), "{t}");
         assert!(!t.contains("MOCK"), "{t}");
+    }
+
+    #[test]
+    fn header_carries_the_version_and_both_transports() {
+        let t = top_text(&app(false));
+        assert!(t.contains(env!("CARGO_PKG_VERSION")), "{t}");
+        assert!(t.contains("cloud"), "{t}");
+        assert!(t.contains("live data"), "{t}");
+    }
+
+    #[test]
+    fn clock_and_alerts_are_right_aligned() {
+        let line = pad_right(status_line(&app(true)), right_line(&app(true)), 60);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.ends_with("UTC "), "clock sits at the edge: {text}");
+        assert_eq!(
+            text.chars().count(),
+            60,
+            "padded to the frame width: {text}"
+        );
     }
 }

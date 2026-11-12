@@ -26,7 +26,9 @@ const COMMIT_BATCH: usize = 64;
 /// best-effort, the live view is not.
 const CHANNEL_DEPTH: usize = 256;
 
-const SCHEMA_VERSION: u32 = 1;
+/// Version 2 adds `bat_w`, the signed battery-side power the runtime estimate
+/// averages over. Old databases get the column added, not rebuilt.
+const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -139,7 +141,8 @@ fn setup(conn: &Connection) -> Result<(), StorageError> {
             in_w REAL NOT NULL,
             out_w REAL NOT NULL,
             solar_w REAL NOT NULL,
-            temp_c REAL NOT NULL
+            temp_c REAL NOT NULL,
+            bat_w REAL NOT NULL DEFAULT 0.0
         );
         CREATE INDEX IF NOT EXISTS ix_samples_sn_t ON samples(sn, t);
         CREATE TABLE IF NOT EXISTS events (
@@ -153,6 +156,18 @@ fn setup(conn: &Connection) -> Result<(), StorageError> {
         CREATE INDEX IF NOT EXISTS ix_events_t ON events(t);
         "#,
     )?;
+    // A database from version 1 has the samples table without `bat_w`; adding the
+    // column keeps the history the app already collected.
+    let has_bat: bool = conn
+        .prepare_cached("SELECT count(*) FROM pragma_table_info('samples') WHERE name = 'bat_w'")?
+        .query_row([], |r| r.get::<_, i64>(0))
+        .map(|n| n > 0)?;
+    if !has_bat {
+        conn.execute(
+            "ALTER TABLE samples ADD COLUMN bat_w REAL NOT NULL DEFAULT 0.0",
+            [],
+        )?;
+    }
     let version: u32 = conn
         .query_row(
             "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'schema'",
@@ -206,7 +221,7 @@ pub fn get_samples(
     limit: usize,
 ) -> Result<Vec<Sample>, StorageError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT t, soc, in_w, out_w, solar_w, temp_c FROM samples WHERE sn = ?1 AND t >= ?2 AND t <= ?3 ORDER BY t LIMIT ?4",
+        "SELECT t, soc, in_w, out_w, solar_w, temp_c, bat_w FROM samples WHERE sn = ?1 AND t >= ?2 AND t <= ?3 ORDER BY t LIMIT ?4",
     )?;
     let rows = stmt.query_map((sn, from.timestamp(), to.timestamp(), limit as i64), |r| {
         Ok(Sample {
@@ -216,6 +231,7 @@ pub fn get_samples(
             out_w: r.get(3)?,
             solar_w: r.get(4)?,
             temp_c: r.get(5)?,
+            bat_w: r.get(6)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -277,8 +293,8 @@ fn write(
         match cmd {
             StorageCmd::Sample { sn, sample } => {
                 conn.execute(
-                    "INSERT INTO samples(sn, t, soc, in_w, out_w, solar_w, temp_c) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    (sn, sample.t.timestamp(), sample.soc, sample.in_w, sample.out_w, sample.solar_w, sample.temp_c),
+                    "INSERT INTO samples(sn, t, soc, in_w, out_w, solar_w, temp_c, bat_w) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    (sn, sample.t.timestamp(), sample.soc, sample.in_w, sample.out_w, sample.solar_w, sample.temp_c, sample.bat_w),
                 )?;
             }
             StorageCmd::Event {
@@ -338,6 +354,7 @@ mod tests {
             out_w: 0.0,
             solar_w: 0.0,
             temp_c: 25.0,
+            bat_w: -in_w,
         }
     }
 
@@ -355,7 +372,7 @@ mod tests {
                 r.get(0)
             })
             .expect("schema row");
-        assert_eq!(version, "1");
+        assert_eq!(version, "2");
         let mode: String = conn
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .expect("journal mode");
@@ -364,21 +381,59 @@ mod tests {
     }
 
     #[test]
+    fn a_version_one_database_keeps_its_rows_and_gains_the_column() {
+        let (path, _keep) = temp_db();
+        // Build the version-1 table by hand, then write a row in it.
+        let conn = Connection::open(&path).expect("open");
+        conn.execute(
+            "CREATE TABLE samples (id INTEGER PRIMARY KEY, sn TEXT, t INTEGER, soc REAL, in_w REAL, out_w REAL, solar_w REAL, temp_c REAL)",
+            [],
+        )
+        .expect("v1 table");
+        conn.execute(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            [],
+        )
+        .expect("meta table");
+        conn.execute("INSERT INTO meta VALUES ('schema', '1')", [])
+            .expect("schema row");
+        conn.execute(
+            "INSERT INTO samples(sn, t, soc, in_w, out_w, solar_w, temp_c) VALUES ('SN1', ?1, 50, 100, 0, 0, 25)",
+            (at(-60).timestamp(),),
+        )
+        .expect("v1 row");
+        drop(conn);
+        let conn = open(&path, 90).expect("reopen with migration");
+        let rows = get_samples(&conn, "SN1", at(-600), at(0), 100).expect("query");
+        assert_eq!(rows.len(), 1, "the old row survives the migration");
+        assert_eq!(
+            rows[0].bat_w, 0.0,
+            "a sample the old schema stored has no battery power"
+        );
+        let version: String = conn
+            .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
+                r.get(0)
+            })
+            .expect("schema row");
+        assert_eq!(version, "2");
+    }
+
+    #[test]
     fn samples_are_written_and_read_back_in_time_order() {
         let (path, _keep) = temp_db();
         let conn = open(&path, 90).expect("open");
         conn.execute(
-            "INSERT INTO samples(sn, t, soc, in_w, out_w, solar_w, temp_c) VALUES ('SN1', ?1, 50, 100, 0, 0, 25)",
+            "INSERT INTO samples(sn, t, soc, in_w, out_w, solar_w, temp_c, bat_w) VALUES ('SN1', ?1, 50, 100, 0, 0, 25, -100)",
             (at(60).timestamp(),),
         )
         .expect("insert 1");
         conn.execute(
-            "INSERT INTO samples(sn, t, soc, in_w, out_w, solar_w, temp_c) VALUES ('SN1', ?1, 55, 200, 0, 0, 26)",
+            "INSERT INTO samples(sn, t, soc, in_w, out_w, solar_w, temp_c, bat_w) VALUES ('SN1', ?1, 55, 200, 0, 0, 26, -200)",
             (at(120).timestamp(),),
         )
         .expect("insert 2");
         conn.execute(
-            "INSERT INTO samples(sn, t, soc, in_w, out_w, solar_w, temp_c) VALUES ('SN2', ?1, 10, 5, 0, 0, 20)",
+            "INSERT INTO samples(sn, t, soc, in_w, out_w, solar_w, temp_c, bat_w) VALUES ('SN2', ?1, 10, 5, 0, 0, 20, 5)",
             (at(90).timestamp(),),
         )
         .expect("insert 3");
@@ -387,6 +442,10 @@ mod tests {
         assert!(rows[0].t < rows[1].t, "oldest first");
         assert_eq!(rows[1].in_w, 200.0);
         assert_eq!((rows[0].soc, rows[1].soc), (50.0, 55.0));
+        assert_eq!(
+            rows[1].bat_w, -200.0,
+            "the signed battery power round-trips"
+        );
     }
 
     #[test]
@@ -395,7 +454,7 @@ mod tests {
         let conn = open(&path, 90).expect("open");
         for i in 0..200 {
             conn.execute(
-                "INSERT INTO samples(sn, t, soc, in_w, out_w, solar_w, temp_c) VALUES ('SN1', ?1, 50, 10, 0, 0, 25)",
+                "INSERT INTO samples(sn, t, soc, in_w, out_w, solar_w, temp_c, bat_w) VALUES ('SN1', ?1, 50, 10, 0, 0, 25, -10)",
                 (at(i * 10).timestamp(),),
             )
             .expect("insert");
@@ -476,6 +535,11 @@ mod tests {
             })
             .expect("event row");
         assert_eq!(level, "Warn");
+        // The same file, reopened, is the restart case: the app reads its history
+        // back through the writer thread.
+        let rows = get_samples(&conn, "SN1", at(-3600), at(3600), 100).expect("query");
+        assert_eq!(rows.len(), 10, "history survives a restart");
+        assert_eq!(rows[9].bat_w, -(100.0 + 9.0), "the newest row is intact");
     }
 
     #[test]
@@ -516,7 +580,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Update>(16);
         let conn = open(&path, 90).expect("open");
         conn.execute(
-            "INSERT INTO samples(sn, t, soc, in_w, out_w, solar_w, temp_c) VALUES ('SN1', ?1, 50, 100, 0, 0, 25)",
+            "INSERT INTO samples(sn, t, soc, in_w, out_w, solar_w, temp_c, bat_w) VALUES ('SN1', ?1, 50, 100, 0, 0, 25, -100)",
             (at(-60).timestamp(),),
         )
         .expect("insert");
@@ -536,6 +600,7 @@ mod tests {
                 assert_eq!(sn, "SN1");
                 assert_eq!(rows.len(), 1);
                 assert_eq!(rows[0].in_w, 100.0);
+                assert_eq!(rows[0].bat_w, -100.0);
             }
             other => panic!("expected a history update, got {other:?}"),
         }

@@ -81,8 +81,8 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    init_tracing(cli.debug);
 
+    init_tracing(cli.debug, cli.cmd.is_some() || cli.init);
     let store = wattdeck::secrets::open()?;
     let file = wattdeck::secrets::file_store::FileStore::default_store()?;
     if let Some(line) = wattdeck::secrets::report_alongside(store.backend(), &file) {
@@ -209,7 +209,7 @@ power_unit = "Auto"
 [history]
 enabled = true
 retention_days = 90
-sample_interval_seconds = 10
+sample_interval_seconds = 5
 memory_samples = 120
 
 [analytics]
@@ -593,7 +593,7 @@ async fn run_loop(
     Ok(())
 }
 
-fn init_tracing(debug: bool) {
+fn init_tracing(debug: bool, console: bool) {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     let filter = tracing_subscriber::EnvFilter::builder()
@@ -603,13 +603,11 @@ fn init_tracing(debug: bool) {
             tracing::level_filters::LevelFilter::INFO.into()
         })
         .from_env_lossy();
-    let stderr = tracing_subscriber::fmt::layer()
-        .with_target(false)
-        .with_writer(std::io::stderr);
-    let base = tracing_subscriber::registry().with(filter).with(stderr);
     // A log file in the data directory, masked through the values the app has
     // registered as secrets. The worker guard is deliberately leaked so the writer
-    // thread lives for the whole run; the process is short-lived.
+    // thread lives for the whole run; the process is short-lived. The file is
+    // written whatever the level, so the diagnostics the app shows have a record
+    // behind them.
     let file_layer = config::data_dir().ok().map(|dir| {
         let appender = tracing_appender::rolling::never(dir, format!("{}.log", config::APP_DIR));
         let (writer, guard) = tracing_appender::non_blocking(appender);
@@ -621,10 +619,18 @@ fn init_tracing(debug: bool) {
             .with_target(false)
             .with_writer(make)
     });
-    match file_layer {
-        Some(layer) if debug => base.with(layer).init(),
-        Some(_) => base.init(),
-        None => base.init(),
+    let base = tracing_subscriber::registry().with(filter).with(file_layer);
+    // The TUI owns the terminal. A log line on stderr paints over the screen, so
+    // console logging is for the headless and wizard paths only.
+    if console {
+        base.with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_writer(std::io::stderr),
+        )
+        .init();
+    } else {
+        base.init();
     }
 }
 

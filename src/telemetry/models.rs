@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
+use crate::devices::capabilities::DeviceCapabilities;
+
 use crate::devices::registry::Family;
 
 /// Where the newest value for a device came from.
@@ -37,6 +39,14 @@ pub enum Provenance {
     Computed,
 }
 
+/// A battery pack, as far as the device reports it.
+///
+/// `soc` is the BMS state of charge; `soc_display` is what the device shows on its
+/// own LCD. They are two different numbers, and the user reads the LCD.
+/// `remaining_wh` is derived from `remainCap` (mAh) at the measured bus voltage:
+/// 6000 mAh at 49 V is 294 Wh, not 6.0 Wh, which is the reading a unit bug
+/// produces. The device does not report the pack capacity on this family;
+/// `capacity_wh` comes from configuration, and the UI says so.
 #[derive(Debug, Clone, Default)]
 pub struct Battery {
     /// BMS state of charge, %.
@@ -55,8 +65,15 @@ pub struct Battery {
     pub amp_a: Option<f64>,
     pub volt_v: Option<f64>,
     pub cycles: Option<f64>,
-    /// Time to full/empty as reported by the device, minutes.
-    pub remain_time_min: Option<f64>,
+    /// Runtime counters, minutes, kept one per device key. Each key means something
+    /// different: `bms_bmsStatus.remainTime` is signed (positive = charging),
+    /// `bms_emsStatus.chgRemainTime` is time to full, `bms_emsStatus.dsgRemainTime`
+    /// is time to empty, `pd.remainTime` is what the LCD shows. Merging them into one
+    /// field is what makes a charging station read as "99 h left".
+    pub bms_remain_min: Option<f64>,
+    pub chg_remain_min: Option<f64>,
+    pub dsg_remain_min: Option<f64>,
+    pub lcd_remain_min: Option<f64>,
     pub cell_volts: Vec<f64>,
     pub cell_temps: Vec<f64>,
     pub charging: Option<bool>,
@@ -68,6 +85,9 @@ pub struct Battery {
     /// Raw BMS charge/discharge state codes, kept verbatim for diagnostics.
     pub chg_state_raw: Option<f64>,
     pub dsg_state_raw: Option<f64>,
+    /// `pd.chgDsgState`, the state code the device shows on its screen:
+    /// 0 = discharging, 1 = charging (verified against the EcoFlow app).
+    pub pd_chg_dsg_raw: Option<f64>,
     /// Lifetime energy counters, kWh, where the device reports them.
     pub charged_kwh: Option<f64>,
     pub discharged_kwh: Option<f64>,
@@ -75,34 +95,54 @@ pub struct Battery {
 }
 
 impl Battery {
-    /// Estimated time left at the current current, computed by the app.
-    /// Positive current = charging, negative = discharging.
-    pub fn computed_runtime_min(&self) -> Option<f64> {
-        let (Some(amp), Some(vol), Some(remaining_wh)) =
-            (self.amp_a, self.volt_v, self.remaining_wh)
-        else {
-            return None;
-        };
-        if amp.abs() < 0.05 {
-            return None;
+    /// Measured battery power, W, signed: positive = charging. `None` when the
+    /// ammeter is inside the noise band, which is how a station at rest reports.
+    pub fn bus_power_w(&self) -> Option<f64> {
+        self.amp_a
+            .zip(self.volt_v)
+            .filter(|(a, _)| a.abs() >= 0.05)
+            .map(|(a, v)| a * v)
+    }
+
+    /// Cells whose reading sits in the band a lithium cell can report. A 0 that the
+    /// device sends for a slot it is not measuring is not a cell, so counting raw
+    /// array length overstates the pack; the band is what makes the count honest.
+    pub fn valid_cells(&self) -> usize {
+        self.cell_volts
+            .iter()
+            .filter(|v| (2.0..=4.5).contains(*v))
+            .count()
+    }
+
+    /// The lowest and highest cell the device measured. A 0 the device sends for a
+    /// slot it is not measuring is not a cell, so the spread never counts an empty
+    /// slot as a discharged cell.
+    pub fn cell_range(&self) -> Option<(f64, f64)> {
+        let mut range: Option<(f64, f64)> = None;
+        for v in self.cell_volts.iter().filter(|v| (2.0..=4.5).contains(*v)) {
+            range = Some(match range {
+                Some((lo, hi)) => (lo.min(*v), hi.max(*v)),
+                None => (*v, *v),
+            });
         }
-        let power_w = amp * vol;
-        if power_w > 0.0 {
-            // Charging: time to reach capacity.
-            let capacity = self.capacity_wh?;
-            let headroom = capacity - remaining_wh;
-            if headroom <= 0.0 {
-                return Some(0.0);
-            }
-            return Some(headroom / power_w * 60.0);
+        range
+    }
+
+    /// Spread across the cells the device measured, mV.
+    pub fn cell_delta_mv(&self) -> Option<f64> {
+        let (lo, hi) = self.cell_range()?;
+        if hi > lo {
+            Some((hi - lo) * 1000.0)
+        } else {
+            None
         }
-        if remaining_wh <= 0.0 {
-            return Some(0.0);
-        }
-        Some(remaining_wh / power_w.abs() * 60.0)
     }
 }
 
+/// Voltage and current readings, in the units the device reports them.
+///
+/// `ac_out_va` / `ac_in_va` are apparent power (volts × amps), a different physical
+/// quantity from active power (W). They are never added to a watt figure.
 #[derive(Debug, Clone, Default)]
 pub struct Power {
     pub total_in_w: Option<f64>,
@@ -121,6 +161,9 @@ pub struct Power {
     pub ac_out_volts: Option<f64>,
     pub ac_out_amps: Option<f64>,
     pub ac_out_freq_hz: Option<f64>,
+    /// Apparent power, VA, derived from the V/A pair the inverter reports.
+    pub ac_out_va: Option<f64>,
+    pub ac_in_va: Option<f64>,
     /// Solar (MPPT) side details.
     pub solar_volts: Option<f64>,
     pub solar_amps: Option<f64>,
@@ -144,6 +187,78 @@ impl Power {
             Some(parts.into_iter().sum())
         }
     }
+    /// Every power channel the UI can show, tagged by direction and by whether the
+    /// model is known to report it. Three states stay distinct: `supported = false`
+    /// is a channel this model does not have, `value = None` is a channel the device
+    /// has not reported in this update, `Some(0.0)` is a measured zero.
+    pub fn channels(&self, caps: DeviceCapabilities) -> Vec<Channel> {
+        [
+            ("solar in", self.solar_in_w, caps.solar_input, true),
+            ("ac in", self.ac_in_w, caps.ac_input, true),
+            ("dc in", self.dc_in_w, caps.dc_input, true),
+            ("ac out", self.ac_out_w, caps.ac_output, false),
+            ("dc out", self.dc_out_w, caps.dc_output, false),
+            ("usb out", self.usb_out_w, caps.usb_output, false),
+            ("12 V out", self.car_out_w, caps.dc_output, false),
+        ]
+        .into_iter()
+        .map(|(label, value, supported, input)| Channel {
+            label,
+            value,
+            supported,
+            input,
+        })
+        .collect()
+    }
+
+    /// The one normalized total every panel uses: the device's own total when it
+    /// reports one, otherwise the sum of the channels it did report, tagged so the
+    /// UI can say where the number came from. A device that reported nothing is
+    /// `None`, never a fabricated zero.
+    pub fn totals(&self, caps: DeviceCapabilities) -> Totals {
+        let ch = self.channels(caps);
+        let sum = |input: bool| -> Vec<f64> {
+            ch.iter()
+                .filter(|c| c.input == input)
+                .filter_map(|c| c.value)
+                .collect()
+        };
+        let pick = |device: Option<f64>, parts: Vec<f64>| -> (Option<f64>, Provenance) {
+            if let Some(v) = device {
+                (Some(v), Provenance::Measured)
+            } else if !parts.is_empty() {
+                (Some(parts.iter().sum()), Provenance::Computed)
+            } else {
+                (None, Provenance::Unknown)
+            }
+        };
+        let (in_w, in_src) = pick(self.total_in_w, sum(true));
+        let (out_w, out_src) = pick(self.total_out_w, sum(false));
+        Totals {
+            in_w,
+            in_src,
+            out_w,
+            out_src,
+        }
+    }
+}
+
+/// One power channel as the dashboard shows it.
+#[derive(Debug, Clone, Copy)]
+pub struct Channel {
+    pub label: &'static str,
+    pub value: Option<f64>,
+    pub supported: bool,
+    pub input: bool,
+}
+
+/// Normalized input/output power, with where each number came from.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Totals {
+    pub in_w: Option<f64>,
+    pub in_src: Provenance,
+    pub out_w: Option<f64>,
+    pub out_src: Provenance,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -172,6 +287,42 @@ pub struct KitInfo {
     pub kit_type: f64,
 }
 
+/// How a device is doing, as far as the app can tell. The cloud list and the live
+/// feed answer different questions, so one state is the union of both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DeviceState {
+    #[default]
+    /// Nothing has ever arrived for this device.
+    Unknown,
+    /// The device is listed and the live feed is delivering.
+    Online,
+    /// Listed, but the last measurement is older than the freshness window.
+    Stale,
+    /// The cloud says the device exists; no live feed has arrived yet.
+    Connecting,
+    /// The cloud says the device is not reporting.
+    Offline,
+    /// The cloud refused to serve this device (the account is not entitled to it).
+    Unsupported,
+    /// The credentials were rejected.
+    AuthError,
+}
+
+impl DeviceState {
+    /// Plain words, for the dashboard.
+    pub fn label(self) -> &'static str {
+        match self {
+            DeviceState::Unknown => "no data",
+            DeviceState::Online => "online",
+            DeviceState::Stale => "stale",
+            DeviceState::Connecting => "connecting",
+            DeviceState::Offline => "offline",
+            DeviceState::Unsupported => "not supported",
+            DeviceState::AuthError => "sign-in failed",
+        }
+    }
+}
+
 /// One device, merged from MQTT partial blocks and REST snapshots.
 #[derive(Debug, Clone)]
 pub struct DeviceSnapshot {
@@ -192,6 +343,12 @@ pub struct DeviceSnapshot {
     pub seq: u64,
     /// Extra battery packs, when the device reports them.
     pub kits: Vec<KitInfo>,
+    /// The last time a live feed arrived for this device.
+    pub last_mqtt: Option<DateTime<Utc>>,
+    /// The last time the cloud answered for this device.
+    pub last_rest: Option<DateTime<Utc>>,
+    /// The cloud's refusal, if it refused: the code and its words, verbatim.
+    pub last_refusal: Option<String>,
 }
 
 impl DeviceSnapshot {
@@ -212,6 +369,9 @@ impl DeviceSnapshot {
             source: Source::None,
             seq: 0,
             kits: Vec::new(),
+            last_mqtt: None,
+            last_rest: None,
+            last_refusal: None,
         }
     }
 
@@ -227,6 +387,38 @@ impl DeviceSnapshot {
 
     pub fn masked_serial(&self) -> String {
         crate::utils::formatting::mask_serial(&self.sn)
+    }
+
+    /// The state the app can defend: what the cloud says, what the live feed says,
+    /// and how long ago the last measurement arrived.
+    pub fn state(&self, now: DateTime<Utc>, stale_window_secs: f64) -> DeviceState {
+        if let Some(refusal) = &self.last_refusal {
+            if refusal.contains("authoriz")
+                || refusal.contains("401")
+                || refusal.contains("token")
+                || refusal.contains("permis")
+            {
+                return DeviceState::AuthError;
+            }
+            return DeviceState::Unsupported;
+        }
+        if !self.online {
+            // Listed, and nothing has ever arrived: the live feed has not reached it
+            // yet. Once data arrived and the cloud says it is gone, it is offline.
+            return if self.last_mqtt.is_none() && self.last_rest.is_none() && self.raw.is_empty() {
+                DeviceState::Connecting
+            } else {
+                DeviceState::Offline
+            };
+        }
+        if self.is_stale(now, stale_window_secs) {
+            return DeviceState::Stale;
+        }
+        if self.raw.is_empty() {
+            DeviceState::Connecting
+        } else {
+            DeviceState::Online
+        }
     }
 
     /// Parse `bms_kitInfo.watts`, the array of accessory packs the device reports.
@@ -266,39 +458,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn computed_runtime_discharging() {
+    fn cells_outside_the_band_are_not_counted() {
         let b = Battery {
-            amp_a: Some(-2.0),
-            volt_v: Some(50.0),
-            remaining_wh: Some(600.0),
+            cell_volts: vec![3.42, 3.44, 3.41, 0.0, 3.43, 0.0],
             ..Default::default()
         };
-        // 100 W draw on 600 Wh = 6 h
-        assert!((b.computed_runtime_min().unwrap() - 360.0).abs() < 0.01);
+        assert_eq!(b.valid_cells(), 4, "the two zero slots are not cells");
+        assert!((b.cell_delta_mv().unwrap() - 30.0).abs() < 0.5);
     }
 
     #[test]
-    fn computed_runtime_charging() {
-        let b = Battery {
+    fn bus_power_is_signed_and_ignores_the_noise_band() {
+        let charging = Battery {
             amp_a: Some(5.0),
             volt_v: Some(50.0),
-            remaining_wh: Some(1000.0),
-            capacity_wh: Some(2048.0),
             ..Default::default()
         };
-        // 250 W into 1048 Wh headroom = 4.192 h
-        assert!((b.computed_runtime_min().unwrap() - 251.52).abs() < 0.01);
-    }
-
-    #[test]
-    fn idle_gives_no_runtime() {
-        let b = Battery {
-            amp_a: Some(0.0),
+        assert_eq!(charging.bus_power_w(), Some(250.0));
+        let at_rest = Battery {
+            amp_a: Some(0.02),
             volt_v: Some(50.0),
-            remaining_wh: Some(500.0),
             ..Default::default()
         };
-        assert_eq!(b.computed_runtime_min(), None);
+        assert_eq!(
+            at_rest.bus_power_w(),
+            None,
+            "a near-zero ammeter is not a flow"
+        );
     }
 
     #[test]
@@ -307,6 +493,21 @@ mod tests {
         assert!(!d.online);
         assert_eq!(d.source, Source::None);
         assert_eq!(d.family, Family::Delta2);
+        assert_eq!(d.state(Utc::now(), 120.0), DeviceState::Connecting);
+    }
+
+    #[test]
+    fn a_cloud_refusal_is_a_device_problem_not_a_stale_feed() {
+        let mut d = DeviceSnapshot::new("SN", "RIVER mini Plus", 58);
+        d.online = true;
+        d.last_refusal = Some("code 1006: device not registered".to_string());
+        assert_eq!(
+            d.state(Utc::now(), 120.0),
+            DeviceState::Unsupported,
+            "the refusal is the reason there is no telemetry"
+        );
+        d.last_refusal = Some("code 5002: unauthorized".to_string());
+        assert_eq!(d.state(Utc::now(), 120.0), DeviceState::AuthError);
     }
 
     #[test]

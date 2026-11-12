@@ -1,13 +1,15 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
 use crate::app::{App, Screen};
 use crate::input::Action;
+use crate::ui::widgets::pad_right;
 
-/// Tab strip with the configured keys, plus the keys that always work.
+/// One compact navigation line: the tab strip on the left, the keys that always
+/// work on the right, in fixed columns.
 pub fn draw(app: &App, frame: &mut Frame, area: Rect) {
     let theme = &app.theme;
     let tabs = [
@@ -18,13 +20,12 @@ pub fn draw(app: &App, frame: &mut Frame, area: Rect) {
         (Screen::Settings, Action::Settings),
     ];
     let current = core::mem::discriminant(&app.screen);
-    let mut spans: Vec<Span> = Vec::new();
+    let mut left: Vec<Span> = Vec::new();
     for (screen, action) in tabs {
         let key = app.keys.key_for(action);
-        let label = format!(" {} {} ", key, screen.label());
         let active = core::mem::discriminant(&screen) == current;
-        spans.push(Span::styled(
-            label,
+        left.push(Span::styled(
+            format!(" {} {} ", key, screen.label()),
             Style::default()
                 .fg(if active {
                     theme.accent()
@@ -38,13 +39,15 @@ pub fn draw(app: &App, frame: &mut Frame, area: Rect) {
                 }),
         ));
     }
-    spans.push(Span::styled(
-        format!(" {} Help ", app.keys.key_for(Action::Help)),
+    let right = vec![Span::styled(
+        format!(
+            "{} device · {} help · {} quit ",
+            app.keys.key_for(Action::Up),
+            app.keys.key_for(Action::Help),
+            app.keys.key_for(Action::Quit),
+        ),
         Style::default().fg(theme.secondary()),
-    ));
-    spans.push(Span::styled(
-        format!(" {} Quit ", app.keys.key_for(Action::Quit)),
-        Style::default().fg(theme.secondary()),
-    ));
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    )];
+    let line = pad_right(left, right, area.width);
+    frame.render_widget(Paragraph::new(line), area);
 }

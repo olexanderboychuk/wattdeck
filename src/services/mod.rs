@@ -16,8 +16,16 @@ pub enum Update {
     DeviceList(Vec<DiscoveredDevice>),
     /// A merged device snapshot after MQTT/REST/mock data.
     Snapshot(Box<DeviceSnapshot>),
-    /// Connection state of a transport, as observed by the service.
-    Transport(Transport, ConnState),
+    /// A transport's state, with the facts behind it: the last success, the last
+    /// failure, the status code, the consecutive failures, the reconnects.
+    Transport(Transport, TransportInfo),
+    /// The cloud refused one device. The code and the message are what the API
+    /// returned, verbatim: a refusal is a device problem, not a connection problem.
+    DeviceRefusal {
+        sn: String,
+        code: String,
+        message: String,
+    },
     /// A user-visible failure: auth error, rate limit, parse error.
     Notification(Notification),
     /// Samples read back from the history database, oldest first.
@@ -37,6 +45,16 @@ pub enum Transport {
     Mqtt,
 }
 
+impl Transport {
+    /// The word a person uses for the path: the cloud API, and the live data feed.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Transport::Rest => "cloud",
+            Transport::Mqtt => "live data",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnState {
     Initializing,
@@ -49,15 +67,47 @@ pub enum ConnState {
 }
 
 impl ConnState {
+    /// Plain words for the header. "DEGRADED" does not tell a person what to do.
     pub fn label(&self) -> &'static str {
         match self {
-            ConnState::Initializing => "INIT",
-            ConnState::Connecting => "CONNECT",
-            ConnState::Connected => "ONLINE",
-            ConnState::Degraded => "DEGRADED",
-            ConnState::Reconnecting => "RECONNECT",
-            ConnState::Offline => "OFFLINE",
-            ConnState::AuthError => "AUTH ERR",
+            ConnState::Initializing => "starting",
+            ConnState::Connecting => "connecting",
+            ConnState::Connected => "online",
+            ConnState::Degraded => "problems",
+            ConnState::Reconnecting => "reconnecting",
+            ConnState::Offline => "offline",
+            ConnState::AuthError => "sign-in failed",
+        }
+    }
+}
+
+/// What a transport is doing, and what it last did. No secrets: the status code and
+/// the server's own words, never a key, a nonce, or a signature.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransportInfo {
+    pub state: ConnState,
+    /// The last request that came back good.
+    pub last_ok: Option<DateTime<Utc>>,
+    /// The last request that failed, with the code the server answered with.
+    pub last_fail: Option<DateTime<Utc>>,
+    pub status: Option<u16>,
+    pub error: Option<String>,
+    /// Failures in a row. A success resets it.
+    pub fails: u32,
+    /// Reconnections this session: MQTT `CONNACK`s, REST sessions re-opened.
+    pub reconnects: u32,
+}
+
+impl TransportInfo {
+    pub fn new(state: ConnState) -> Self {
+        Self {
+            state,
+            last_ok: None,
+            last_fail: None,
+            status: None,
+            error: None,
+            fails: 0,
+            reconnects: 0,
         }
     }
 }

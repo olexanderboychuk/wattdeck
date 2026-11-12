@@ -3,6 +3,9 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Duration, Utc};
 
 /// A stored sample. Powers are instantaneous, energy is integrated over the interval.
+/// `bat_w` is the battery-side power the BMS ammeter measured, signed: positive is
+/// charging. It is what the runtime estimate averages over, because the battery side
+/// sees the charging losses the input side does not.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sample {
     pub t: DateTime<Utc>,
@@ -11,6 +14,55 @@ pub struct Sample {
     pub out_w: f64,
     pub solar_w: f64,
     pub temp_c: f64,
+    pub bat_w: f64,
+}
+
+impl Sample {
+    /// A sample built from what the device reported. Returns `None` when the device
+    /// has reported no measurement at all: a station that has sent nothing is not a
+    /// station measuring zero, and storing zeros would put numbers on the chart the
+    /// station never produced.
+    pub fn from_device(
+        t: DateTime<Utc>,
+        d: &crate::telemetry::models::DeviceSnapshot,
+    ) -> Option<Self> {
+        let measured = d.battery.soc.is_some()
+            || d.power.total_in_w.is_some()
+            || d.power.total_out_w.is_some();
+        if !measured {
+            return None;
+        }
+        Some(Self {
+            t,
+            soc: d.battery.soc.unwrap_or(0.0),
+            in_w: d.power.total_in_w.unwrap_or(0.0),
+            out_w: d.power.total_out_w.unwrap_or(0.0),
+            solar_w: d.power.solar_in_w.unwrap_or(0.0),
+            temp_c: d.battery.temp_c.unwrap_or(0.0),
+            bat_w: d.battery.bus_power_w().unwrap_or(0.0),
+        })
+    }
+
+    /// Whether two samples are the same measurement, ignoring the instant they were
+    /// taken. An unchanged report is not stored again; the last identical sample is
+    /// repeated on the heartbeat, so history says the station is still answering.
+    pub fn same_measurement(&self, other: &Sample) -> bool {
+        (
+            self.soc,
+            self.in_w,
+            self.out_w,
+            self.solar_w,
+            self.temp_c,
+            self.bat_w,
+        ) == (
+            other.soc,
+            other.in_w,
+            other.out_w,
+            other.solar_w,
+            other.temp_c,
+            other.bat_w,
+        )
+    }
 }
 
 /// Fixed-capacity ring of recent samples per device, for sparklines.
@@ -133,6 +185,31 @@ pub fn mean_power(samples: &[Sample], field: fn(&Sample) -> f64) -> f64 {
     samples.iter().map(field).sum::<f64>() / samples.len() as f64
 }
 
+/// Mean of `field` over the samples inside the last `secs` of `now`, with the sample
+/// count, so a caller can tell a mean from a single reading. Samples outside the
+/// window are not averaged: history the station has stopped sending is not evidence
+/// of what it is doing now.
+pub fn rolling_avg(
+    samples: &[Sample],
+    now: DateTime<Utc>,
+    secs: i64,
+    field: fn(&Sample) -> f64,
+) -> (f64, usize) {
+    let cutoff = now - Duration::seconds(secs);
+    let inside: Vec<f64> = samples
+        .iter()
+        .filter(|s| s.t >= cutoff && s.t <= now)
+        .map(field)
+        .collect();
+    if inside.is_empty() {
+        return (0.0, 0);
+    }
+    (
+        inside.iter().sum::<f64>() / inside.len() as f64,
+        inside.len(),
+    )
+}
+
 pub fn sample_span(samples: &[Sample]) -> Duration {
     if samples.len() < 2 {
         return Duration::zero();
@@ -160,6 +237,7 @@ mod tests {
             out_w,
             solar_w: 0.0,
             temp_c: 25.0,
+            bat_w: 0.0,
         }
     }
 
@@ -213,6 +291,7 @@ mod tests {
             out_w: 0.0,
             solar_w: 0.0,
             temp_c: 20.0,
+            bat_w: -100.0,
         };
         // Two pairs, 10 minutes apart inside each day: 100 W * 600 s = 16.67 Wh.
         let totals = daily_totals(&[
@@ -239,6 +318,22 @@ mod tests {
     }
 
     #[test]
+    fn rolling_average_stays_inside_its_window() {
+        let now = base();
+        let s = [
+            sample(30, 0.0, 0.0), // 30 minutes old: outside a 15-minute window
+            sample(9, 100.0, 0.0),
+            sample(4, 200.0, 0.0),
+            sample(1, 300.0, 0.0),
+        ];
+        let (avg, n) = rolling_avg(&s, now, 900, |x| x.in_w);
+        assert_eq!(n, 3, "the 30-minute-old sample is not averaged");
+        assert!((avg - 200.0).abs() < 0.01);
+        let (avg, n) = rolling_avg(&s, now, 60, |x| x.in_w);
+        assert_eq!((avg, n), (300.0, 1), "one sample inside one minute");
+    }
+
+    #[test]
     fn empty_history_is_safe() {
         let h = History::new(10);
         assert!(h.is_empty());
@@ -246,5 +341,6 @@ mod tests {
         assert_eq!(integrate_energy(&[], |x| x.in_w), 0.0);
         assert_eq!(peak_powers(&[]), (0.0, 0.0));
         assert_eq!(mean_power(&[], |x| x.in_w), 0.0);
+        assert_eq!(rolling_avg(&[], base(), 900, |x| x.in_w), (0.0, 0));
     }
 }

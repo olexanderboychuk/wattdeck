@@ -33,6 +33,10 @@ pub fn placeholder(app: &App, frame: &mut Frame, area: Rect, text: &str) {
 }
 
 pub fn section(app: &App, frame: &mut Frame, area: Rect, title: &str, lines: Vec<Line>) {
+    // A box with no room for a row says nothing, so it is not drawn.
+    if area.height < 3 || lines.is_empty() {
+        return;
+    }
     let block = Block::default()
         .title(format!(" {title} "))
         .borders(Borders::ALL)

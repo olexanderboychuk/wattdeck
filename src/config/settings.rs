@@ -180,8 +180,10 @@ impl Default for HistoryConfig {
         Self {
             enabled: true,
             retention_days: 90,
-            sample_interval_seconds: 10,
-            memory_samples: 120,
+            // 5 seconds: a station whose power changes is charted at that resolution,
+            // and the 24-hour memory window is 720 samples.
+            sample_interval_seconds: 5,
+            memory_samples: 720,
         }
     }
 }

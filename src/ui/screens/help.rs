@@ -7,6 +7,7 @@ use crate::app::App;
 use crate::input::Action;
 use crate::ui::layout::Areas;
 use crate::ui::screens::section;
+use crate::ui::snapshot::Snapshot;
 
 const HELP_ROWS: [(Action, &str); 20] = [
     (Action::Dashboard, "dashboard"),
@@ -31,7 +32,7 @@ const HELP_ROWS: [(Action, &str); 20] = [
     (Action::Quit, "quit"),
 ];
 
-pub fn draw(app: &App, frame: &mut Frame, areas: Areas) {
+pub fn draw(app: &App, _snap: &Snapshot, frame: &mut Frame, areas: Areas) {
     let theme = &app.theme;
     let rows: Vec<Line> = HELP_ROWS
         .iter()

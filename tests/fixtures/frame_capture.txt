@@ -1,27 +1,27 @@
 ===== start =====
-WATTDECK MOCK ● ONLINE REST ONLINE MQTT ONLINE
- DEVICES 2 SEL DELTA 2 Max UPDATED just now ALERTS 2 2 devices discovered
-┌▶  DELTA 2 Max  ●───────────────────────────────┐┌   RIVER 2 Pro  ○───────────────────────────────┐
-│████████████████▍░░░ 82%                        ││-- --                                           │
-└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
-┌ DELTA 2 Max ───────────────────────────────────┐┌ POWER FLOW ────────────────────────────────────┐
-│████████████████████████████████▊░░░░░░░ 82%    ││Solar   841 W   AC 0 W                          │
-│remaining 3.36 kWh  capacity 4.10 kWh           ││TOTAL IN841 W   DC 0 W                          │
-│health 99%  temp 35 °C  runtime 57m (calc)      ││──▶ charging 82%                                │
-│cells 3.295–3.312 V  cycles 64  I 53.0 V 14.63 A││AC out  51 W   USB --                           │
-│CHARGING · IN 841 W · OUT 66 W                  ││TOTAL OUT66 W   12V 0 W                         │
-│                                                ││USB 1 15 W                                      │
-│                                                ││AC in 230.0 V --  AC out 230.1 V --             │
-│                                                ││                                                │
-│                                                ││                                                │
-│                                                │└────────────────────────────────────────────────┘
-│                                                │┌ DISTRIBUTION ──────────────────────────────────┐
-│                                                ││Solar  ████████████████████████████ 841 W       │
-│                                                ││AC in  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0 W         │
-│                                                ││DC in  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0 W         │
-└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
-┌ POWER HISTORY ───────────────────────────────────────────────────────────────────────────────────┐
-│insufficient history: not enough samples to chart (collecting)                                    │
-│                                                                                                  │
+WATTDECK 0.1.0 MOCK cloud online live data online                             ALERTS 2 13:42:17 UTC
+ DEVICES 2 SEL DELTA 2 Max UPDATED just now
+┌ DEVICES ─────────────────────────────────────────────────────────────────────────────────────────┐
+│▶ DELTA 2 Max   online          82% IN   841 W OUT    66 W MO***************30 MOCK               │
+│  RIVER 2 Pro   connecting       -- IN      -- OUT      -- MO**************11 MOCK                │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
- 1 Dashboard  2 Devices  3 Analytics  4 Alerts  5 Settings  ? Help  q Quit
+┌ DELTA 2 Max MO***************30┐┌ POWER FLOW ────────────────────────────────────────────────────┐
+│82% LCD 82%                     ││TOTAL IN 841 W (device)                  TOTAL OUT 66 W (device)│
+│██████████████82% ████████      ││solar in ███████████████ 841 W  ac out   ▉░░░░░░░░░░░░░░ 51 W   │
+│3.36 kWh / 4.10 kWh             ││ac in    ░░░░░░░░░░░░░░░ 0 W    dc out   --                     │
+│soh 99%  cycles 64              ││dc in    ░░░░░░░░░░░░░░░ 0 W    usb out  --                     │
+│time full in 57m                ││                                12 V out ░░░░░░░░░░░░░░░ 0 W    │
+│CHARGING                        ││net  +775 W  (device → device)                                  │
+│MOCK · updated just now         ││ports USB 1 15 W                                                │
+└────────────────────────────────┘└────────────────────────────────────────────────────────────────┘
+┌ BMS DIAGNOSTICS ─────────────────────┐┌ CONNECTION ──────────────────────────────────────────────┐
+│battery  53.0 V 14.63 A 775 W (calc)  ││cloud online                                no request yet│
+│cells    3.295–3.312 V  delta 17 mV  8││reconnects 0                                              │
+│cycles 64  soh 99%  mos --            ││live data online                    last good just now ago│
+│temp     pack 35 °C                   ││reconnects 0                                              │
+│counters charged --  discharged --    ││device data                         last seen just now ago│
+│▂▇ ▄█▂▁▂                              ││                                                          │
+│12345678                              ││                                                          │
+│cell spread 3.295–3.312 V             ││                                                          │
+└──────────────────────────────────────┘└──────────────────────────────────────────────────────────┘
+ 1 Dashboard  2 Devices  3 Analytics  4 Alerts  5 Settings              up device · ? help · q quit

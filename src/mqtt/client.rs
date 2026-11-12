@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS, SubscribeReasonCode, Transport};
 use tokio::sync::mpsc::Sender;
 
@@ -12,7 +12,7 @@ use crate::api::devices;
 use crate::api::devices::MqttCredentials;
 use crate::config::settings::MqttConfig;
 use crate::services::{
-    Command, ConnState, DiscoveredDevice, Notification, Transport as Source, Update,
+    Command, ConnState, DiscoveredDevice, Notification, Transport as Source, TransportInfo, Update,
 };
 use crate::telemetry::models::{DeviceSnapshot, Source as Data};
 use crate::telemetry::normalizer::{merge_params, renorm};
@@ -92,6 +92,9 @@ pub struct MqttProvider {
     /// The id the next command carries. A live DELTA 2 Max answers a `set` by
     /// echoing this id on `set_reply`, so each command gets its own.
     next_cmd_id: u64,
+    /// What the MQTT transport has done, for the diagnostics screen: reconnects, the
+    /// last good message, the last failure.
+    conn: TransportInfo,
 }
 
 impl MqttProvider {
@@ -105,7 +108,26 @@ impl MqttProvider {
             sent_ids: HashMap::new(),
             account: String::new(),
             next_cmd_id: crate::controls::BASE_ID,
+            conn: TransportInfo::new(ConnState::Initializing),
         }
+    }
+
+    /// The MQTT state to report, with the counters kept here: a `CONNACK` after a
+    /// drop is one reconnect, a broker error is one failure.
+    fn mqtt_state(&mut self, next: ConnState, now: DateTime<Utc>) -> Update {
+        if next == ConnState::Connected {
+            if self.conn.state != ConnState::Connected && self.conn.state != ConnState::Initializing
+            {
+                self.conn.reconnects += 1;
+            }
+            self.conn.last_ok = Some(now);
+            self.conn.fails = 0;
+        } else if next == ConnState::Reconnecting {
+            self.conn.last_fail = Some(now);
+            self.conn.fails += 1;
+        }
+        self.conn.state = next;
+        Update::Transport(Source::Mqtt, self.conn.clone())
     }
 
     pub async fn run(mut self, tx: Sender<Update>, mut cmd: tokio::sync::mpsc::Receiver<Command>) {
@@ -118,7 +140,7 @@ impl MqttProvider {
                     ))))
                     .await;
                 let _ = tx
-                    .send(Update::Transport(Source::Mqtt, ConnState::AuthError))
+                    .send(self.mqtt_state(ConnState::AuthError, Utc::now()))
                     .await;
                 return;
             }
@@ -135,7 +157,7 @@ impl MqttProvider {
                     ))))
                     .await;
                 let _ = tx
-                    .send(Update::Transport(Source::Mqtt, ConnState::AuthError))
+                    .send(self.mqtt_state(ConnState::AuthError, Utc::now()))
                     .await;
                 return;
             }
@@ -148,7 +170,7 @@ impl MqttProvider {
         let mut timer = tokio::time::interval(refresh);
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let _ = tx
-            .send(Update::Transport(Source::Mqtt, ConnState::Connecting))
+            .send(self.mqtt_state(ConnState::Connecting, Utc::now()))
             .await;
 
         loop {
@@ -156,7 +178,9 @@ impl MqttProvider {
                 ev = ev.poll() => {
                     match ev {
                         Ok(Event::Incoming(Incoming::ConnAck(_))) => {
-                            let _ = tx.send(Update::Transport(Source::Mqtt, ConnState::Connected)).await;
+                            let _ = tx
+                                .send(self.mqtt_state(ConnState::Connected, Utc::now()))
+                                .await;
                             // Each topic goes out as its own SUBSCRIBE packet: a
                             // combined subscribe is refused by the broker.
                             for d in self.devices.clone() {
@@ -196,7 +220,7 @@ impl MqttProvider {
                         Ok(_) => {}
                         Err(e) => {
                             let _ = tx
-                                .send(Update::Transport(Source::Mqtt, ConnState::Reconnecting))
+                                .send(self.mqtt_state(ConnState::Reconnecting, Utc::now()))
                                 .await;
                             let _ = tx.try_send(Update::Notification(Notification::warn(format!(
                                 "MQTT: {e}"
@@ -263,7 +287,8 @@ impl MqttProvider {
 
     /// Ask every device for its latest snapshot. Devices throttle their pushes when
     /// nobody polls, so this runs on the refresh cadence.
-    async fn publish(&self, client: &AsyncClient, tx: &Sender<Update>) {
+    async fn publish(&mut self, client: &AsyncClient, tx: &Sender<Update>) {
+        let mut refused = false;
         for d in &self.devices {
             let topic = crate::mqtt::topics::refresh_topic(&self.account, &d.sn);
             if client
@@ -276,8 +301,11 @@ impl MqttProvider {
                 .await
                 .is_err()
             {
-                let _ = tx.try_send(Update::Transport(Source::Mqtt, ConnState::Degraded));
+                refused = true;
             }
+        }
+        if refused {
+            let _ = tx.try_send(self.mqtt_state(ConnState::Degraded, Utc::now()));
         }
     }
 

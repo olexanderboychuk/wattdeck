@@ -137,6 +137,7 @@ mod tests {
             out_w,
             solar_w: solar,
             temp_c: 25.0,
+            bat_w: 0.0,
         }
     }
 

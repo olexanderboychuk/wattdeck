@@ -114,6 +114,34 @@ impl DeviceCapabilities {
             energy_history: false,
         }
     }
+
+    /// The capabilities in plain words, for the device screen. Only the verified
+    /// ones are named; an empty list says nothing has been confirmed for this model.
+    pub fn summary(&self) -> Vec<&'static str> {
+        let flags: [(&str, bool); 16] = [
+            ("battery", self.battery_monitoring),
+            ("health", self.battery_health),
+            ("cells", self.battery_cells),
+            ("temperature", self.temperature_monitoring),
+            ("solar in", self.solar_input),
+            ("AC in", self.ac_input),
+            ("DC in", self.dc_input),
+            ("AC out", self.ac_output),
+            ("DC out", self.dc_output),
+            ("USB out", self.usb_output),
+            ("AC control", self.ac_output_control),
+            ("DC control", self.dc_output_control),
+            ("charge limit", self.charge_limit_control),
+            ("extra battery", self.extra_battery),
+            ("grid", self.grid_connection),
+            ("history", self.energy_history),
+        ];
+        flags
+            .into_iter()
+            .filter(|(_, on)| *on)
+            .map(|(name, _)| name)
+            .collect()
+    }
 }
 
 #[cfg(test)]

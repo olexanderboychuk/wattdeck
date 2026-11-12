@@ -5,10 +5,11 @@ use ratatui::text::Line;
 use crate::app::App;
 use crate::ui::layout::Areas;
 use crate::ui::screens::{kv, section};
+use crate::ui::snapshot::Snapshot;
 
 /// Settings screen. Values are shown from the loaded config; editing keys on the
 /// screen is a later milestone, and the screen says so.
-pub fn draw(app: &App, frame: &mut Frame, areas: Areas) {
+pub fn draw(app: &App, snap: &Snapshot, frame: &mut Frame, areas: Areas) {
     let cfg = &app.config;
     let (left, right) = crate::ui::layout::columns(areas.main, areas.compact);
 
@@ -176,5 +177,5 @@ pub fn draw(app: &App, frame: &mut Frame, areas: Areas) {
 
     let note = Line::from("");
     let _ = note;
-    crate::ui::widgets::power_graph::history(app, frame, areas.history);
+    crate::ui::widgets::power_graph::history(app, snap, frame, areas.history);
 }
