@@ -12,4 +12,5 @@ pub mod services;
 pub mod storage;
 pub mod telemetry;
 pub mod ui;
+pub mod update;
 pub mod utils;

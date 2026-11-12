@@ -60,6 +60,9 @@ struct Cli {
     /// Start in a named mock scenario (solar charging, AC charging, high load discharging, fully charged, critical battery, device offline).
     #[arg(long, value_name = "SCENARIO")]
     scenario: Option<String>,
+    /// Skip the launch update check: no GitHub request, no download, nothing installed.
+    #[arg(long)]
+    no_update: bool,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -77,6 +80,8 @@ enum Cmd {
     },
     /// Ask for the keys, store them, and show what the keys can see.
     Setup,
+    /// Check for a new build, verify its SHA256, install it, print what happened.
+    Update,
 }
 
 fn main() -> Result<()> {
@@ -96,6 +101,14 @@ fn main() -> Result<()> {
     }
 
     let mut cfg = config::load_config(cli.config.as_deref())?;
+    if cli.no_update {
+        cfg.update.enabled = false;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        // The leftover from the last Windows update, deleted before the terminal
+        // is set up. A no-op on unix when there is no `.old`.
+        wattdeck::update::install::cleanup_stale(&exe);
+    }
     if cli.read_only {
         cfg.controls.enabled = false;
     }
@@ -139,9 +152,47 @@ fn main() -> Result<()> {
             wattdeck::secrets::wizard::run(store.as_ref(), &mut prompt, &check)?;
             Ok(())
         }
-        None => {
+        Some(Cmd::Update) => {
             let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(run_tui(cfg, creds, use_mock, scenario, cli.device, &source))
+            let status = runtime.block_on(wattdeck::update::run(
+                &cfg.update,
+                env!("CARGO_PKG_VERSION"),
+                &config::data_dir()?.join("update"),
+                &std::env::current_exe()?,
+                None,
+            ));
+            match status {
+                Ok(wattdeck::update::Status::UpToDate) => {
+                    println!("wattdeck {} is the latest build", env!("CARGO_PKG_VERSION"));
+                }
+                Ok(wattdeck::update::Status::Applied { from, to }) => {
+                    println!("updated wattdeck {from} → {to} · restart to apply the new build");
+                }
+                Ok(wattdeck::update::Status::Available { to }) => {
+                    println!("wattdeck {to} is newer; nothing was installed");
+                }
+                // A failure is a named refusal and a non-zero exit, not a silent
+                // success: the message names the asset and the sums file.
+                Ok(wattdeck::update::Status::Failed(reason)) => {
+                    anyhow::bail!("update check failed: {reason}");
+                }
+                Err(e) => {
+                    anyhow::bail!("update check failed: {e:#}");
+                }
+            }
+            Ok(())
+        }
+        None => {
+            let check = wattdeck::update::launch_check(
+                &cfg.update,
+                cli.no_update,
+                use_mock,
+                &wattdeck::update::seams(),
+            );
+            let runtime = tokio::runtime::Runtime::new()?;
+            runtime.block_on(run_tui(
+                cfg, creds, use_mock, scenario, cli.device, &source, check,
+            ))
         }
     }
 }
@@ -223,6 +274,13 @@ high_temperature_c = 45.0
 high_output_w = 2000.0
 notify_disconnected = true
 cooldown_seconds = 600
+
+[update]
+# The launch check: one GitHub API request, verify the asset's SHA256, install.
+# Off means no network: enabled = false, or wattdeck --no-update
+enabled = true
+repo = "olexanderboychuk/wattdeck"
+timeout_seconds = 10
 
 [controls]
 enabled = false
@@ -439,6 +497,8 @@ async fn run_tui(
     scenario: Scenario,
     device: Option<String>,
     source: &str,
+    // Runs the launch update check as a background task.
+    check_update: bool,
 ) -> Result<()> {
     let mut app = App::new(cfg.clone(), use_mock, scenario);
     // The header carries no credential text; the Alerts screen is where state the
@@ -463,6 +523,8 @@ async fn run_tui(
     }
 
     let (tx, mut rx) = mpsc::channel::<Update>(64);
+    // The update check reports through the same channel the providers use.
+    let tx_update = tx.clone();
     let (cmd_tx, cmd_rx) = mpsc::channel::<Command>(8);
     app.set_command_sender(cmd_tx);
     // The loop has to hear about an fps change made from the keyboard.
@@ -505,6 +567,29 @@ async fn run_tui(
         }
     }
 
+    if check_update {
+        // The check is a background task: the terminal opens without waiting for
+        // GitHub, and the answer arrives as one Update.
+        let update_cfg = cfg.update.clone();
+        let cache = config::data_dir()?.join("update");
+        let exe = std::env::current_exe()?;
+        tokio::spawn(async move {
+            let status = match wattdeck::update::run(
+                &update_cfg,
+                env!("CARGO_PKG_VERSION"),
+                &cache,
+                &exe,
+                Some(&tx_update),
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => wattdeck::update::Status::Failed(format!("{e:#}")),
+            };
+            let _ = tx_update.send(Update::Release(status)).await;
+        });
+    }
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -526,6 +611,11 @@ async fn run_tui(
     let result = run_loop(&mut terminal, &mut app, &mut rx, &mut tick_rx).await;
 
     restore_terminal()?;
+    // The line is printed after the terminal is restored, so it lands in the
+    // scrollback the user reads after quitting.
+    if let Some(wattdeck::update::Status::Applied { from, to }) = &app.release {
+        println!("updated wattdeck {from} → {to} · restart to apply the new build");
+    }
     result
 }
 

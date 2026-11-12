@@ -158,3 +158,19 @@ fn wizard_needs_a_terminal() {
         "env-var path named: {text}"
     );
 }
+
+/// The launch check is opt-out, and the headless path is a subcommand. `--help` is
+/// where the surface is checked; `--help` touches no network.
+#[test]
+fn the_update_surface_is_in_help() {
+    let out = Command::new(env!("CARGO_BIN_EXE_wattdeck"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("--no-update"), "--help printed: {text}");
+    assert!(
+        text.contains("update"),
+        "the headless update command is not in help: {text}"
+    );
+}

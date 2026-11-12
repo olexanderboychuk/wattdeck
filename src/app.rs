@@ -106,6 +106,9 @@ pub enum AlertKind {
     /// The credential state of the run: which backend the keys came from, and
     /// the mock-mode hint naming the wizard.
     Credential,
+    /// The launch update check: the build that was verified and installed, and the
+    /// restart that applies it.
+    Update,
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +159,9 @@ pub struct App {
     /// The control the user is about to send, before the confirmation dialog.
     pub pending_control: Option<crate::controls::Pending>,
     pub control_row: usize,
+    /// The launch update check's result for this run, when there is one. The app
+    /// never calls the API; the network lives in `src/update/`.
+    pub release: Option<crate::update::Status>,
     /// Cap on cached rows per device, so a query for 30 days cannot grow memory.
     query_limit: usize,
     /// One-shot flag for the "writer behind" notice, so a saturated queue is
@@ -202,6 +208,7 @@ impl App {
             sent_commands: Vec::new(),
             pending_control: None,
             control_row: 0,
+            release: None,
             query_limit: 4096,
             history_behind_reported: false,
             last_query: None,
@@ -398,6 +405,25 @@ impl App {
                     self.notices.pop_front();
                 }
             }
+            Update::Release(status) => match status {
+                crate::update::Status::Applied { from, to } => {
+                    self.system_alert(
+                        AlertKind::Update,
+                        Level::Info,
+                        format!("updated wattdeck {from} → {to} · restart to apply"),
+                    );
+                    self.release = Some(crate::update::Status::Applied { from, to });
+                }
+                // A launch failure is traced, not alerted: a rate-limit refusal on
+                // every launch must not fill the Alerts screen.
+                crate::update::Status::Failed(reason) => {
+                    tracing::warn!("update check failed: {reason}");
+                }
+                other => {
+                    tracing::debug!("update check: {other:?}");
+                    self.release = Some(other);
+                }
+            },
         }
     }
 
@@ -2212,5 +2238,53 @@ mod tests {
             second.range_covered(SN),
             "hours of span cover the 24 h range"
         );
+    }
+
+    #[test]
+    fn an_applied_update_sets_the_footer_state_and_the_exact_alert_line() {
+        let mut a = App::new(Config::default(), true, Scenario::SolarCharging);
+        a.apply_update(Update::Release(crate::update::Status::Applied {
+            from: "0.2.0".to_string(),
+            to: "9.9.9".to_string(),
+        }));
+        assert_eq!(
+            a.release,
+            Some(crate::update::Status::Applied {
+                from: "0.2.0".to_string(),
+                to: "9.9.9".to_string()
+            }),
+            "the footer state is what the footer draws"
+        );
+        assert!(
+            a.alerts.iter().any(|al| {
+                al.kind == AlertKind::Update
+                    && al.text == "updated wattdeck 0.2.0 → 9.9.9 · restart to apply"
+            }),
+            "the Alerts screen must carry the exact line: {:?}",
+            a.alerts
+        );
+    }
+
+    #[test]
+    fn a_failed_launch_check_is_traced_not_alerted() {
+        let mut a = App::new(Config::default(), true, Scenario::SolarCharging);
+        a.apply_update(Update::Release(crate::update::Status::Failed(
+            "no latest release in olexanderboychuk/wattdeck".to_string(),
+        )));
+        assert!(
+            !a.alerts.iter().any(|al| al.kind == AlertKind::Update),
+            "a rate-limit refusal on every launch must not fill the Alerts screen"
+        );
+        assert!(a.release.is_none(), "a failure is not a footer state");
+    }
+
+    #[test]
+    fn a_newer_tag_available_is_recorded_without_an_alert() {
+        let mut a = App::new(Config::default(), true, Scenario::SolarCharging);
+        a.apply_update(Update::Release(crate::update::Status::Available {
+            to: "9.9.9".to_string(),
+        }));
+        assert!(a.release.is_some());
+        assert!(!a.alerts.iter().any(|al| al.kind == AlertKind::Update));
     }
 }

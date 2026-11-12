@@ -9,6 +9,8 @@ One process, three kinds of work, joined only by channels:
                                 ├─► mpsc<Update> (256) ─► App ─► ratatui render
   REST API    ──► LiveProvider ─┘                          ▲
                                                            │
+  GitHub    ──► update task ───────────────────────────────┤
+                                                           │
   SQLite    ◄── storage writer thread ◄─ mpsc<StorageCmd> ─┘ (64)
 ```
 
@@ -25,6 +27,11 @@ One process, three kinds of work, joined only by channels:
   keyring and plaintext-file impls, the probe that picks the backend, the
   `wattdeck setup` wizard behind prompt and device-check traits, and the
   precedence env → keyring → file. It is the only module that touches credentials.
+- `update/` (`src/update/mod.rs`, `src/update/install.rs`) is the launch check: one
+  GitHub request, the asset verified against `SHA256SUMS.txt` before extraction,
+  installed over the binary that is running. It never touches the UI; the result
+  comes back as one `Update::Release`, and the footer, the Alerts screen and the
+  printed restart line read the state `App` made from it.
 
 The invariant that matters most: **the UI never calls the API and never touches
 the database.** A slow network or a slow disk cannot stall a frame. Rendering is
