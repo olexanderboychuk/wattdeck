@@ -76,6 +76,13 @@ screenshots: release ## render the README screenshots from the release binary
 	@# changing the screen: twelve presses let the mock sample, so the POWER
 	@# HISTORY band has bars to chart. key 12 is that dashboard, key 13 the
 	@# screen the 4/3 key switched to.
+	@# The PNGs are not byte-reproducible across hours: the ALERTS lines carry
+	@# the wall-clock time of each alert, and the hourly bucket label is the
+	@# current hour. Regenerating on 2026-11-12 left dashboard.png pixel-identical
+	@# and changed only the inside of those lines (difference bounding boxes
+	@# alerts (29,77,87,127), analytics (449,97,457,107)), so the layout is the
+	@# same and the committed images are what the target renders. Commit the
+	@# output, not a claim.
 	$(PYTHON) tools/pty_probe.py 100 26 'zzzzzzzzzzzz4q' env HOME=$(FAKEHOME) ./$(RELEASE) --mock > /tmp/wattdeck-alerts.txt
 	$(PYTHON) tools/pty_probe.py 100 26 'zzzzzzzzzzzz3q' env HOME=$(FAKEHOME) ./$(RELEASE) --mock > /tmp/wattdeck-analytics.txt
 	$(PYTHON) tools/render_frame.py /tmp/wattdeck-alerts.txt 'key 12' $(SCREENSHOTS_DIR)/dashboard.png $(if $(FONT),--font $(FONT))
