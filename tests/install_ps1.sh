@@ -29,7 +29,16 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 release="$work/releases"
 mkdir -p "$release/bin"
-cp "$repo/target/release/wattdeck" "$release/bin/wattdeck.exe"
+# Whichever layout the build produced (see tests/install_sh.sh: `--target`
+# puts the binary in target/<target>/release).
+if [ -f "$repo/target/release/wattdeck" ]; then
+    built="$repo/target/release/wattdeck"
+elif [ -f "$repo/target/x86_64-unknown-linux-gnu/release/wattdeck" ]; then
+    built="$repo/target/x86_64-unknown-linux-gnu/release/wattdeck"
+else
+    fail "no release binary in $repo/target (run make release first)"
+fi
+cp "$built" "$release/bin/wattdeck.exe"
 # The tag equals the crate version, so the version rule below is the CI's rule
 # (release.yml compares `wattdeck 0.1.0` against the tag with `v` stripped).
 tag="v0.1.0"

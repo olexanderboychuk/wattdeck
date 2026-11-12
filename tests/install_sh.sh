@@ -13,7 +13,19 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 # A release dir with one asset and its SHA256, built from the release binary.
 release="$work/releases"
 mkdir -p "$release/bin"
-cp "$repo/target/release/wattdeck" "$release/bin/"
+# The release binary, in whichever layout the build produced it: `cargo build
+# --release` writes target/release/wattdeck, and CI's
+# `cargo build --release --target x86_64-unknown-linux-gnu` writes
+# target/x86_64-unknown-linux-gnu/release/wattdeck. Both are accepted so the
+# test runs after make and after the CI build step.
+if [ -f "$repo/target/release/wattdeck" ]; then
+    built="$repo/target/release/wattdeck"
+elif [ -f "$repo/target/x86_64-unknown-linux-gnu/release/wattdeck" ]; then
+    built="$repo/target/x86_64-unknown-linux-gnu/release/wattdeck"
+else
+    fail "no release binary in $repo/target (run make release first)"
+fi
+cp "$built" "$release/bin/"
 tag="v9.9.9"
 target="x86_64-unknown-linux-gnu"
 tar -czf "$release/wattdeck-$tag-$target.tar.gz" -C "$release/bin" wattdeck

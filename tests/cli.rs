@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Command;
 
 /// The CLI name is the app's public identity, so `--help` is where it is checked.
@@ -49,9 +50,17 @@ fn setup_and_init_are_in_help() {
 }
 
 /// `--init` is the scripted path: it writes the starter config and points at the
-/// wizard. `XDG_CONFIG_HOME` is set to the temp dir so the config location is
-/// the one the test can see — an isolated HOME does not disable the keyring (the
-/// user bus is per-user), so the credential template is not asserted here.
+/// wizard. The assertion uses the path the app prints, because the config
+/// location is platform-specific: `XDG_CONFIG_HOME` steers it on Linux, on macOS
+/// the app dir is `$HOME/Library/Application Support/wattdeck`, on Windows
+/// `%APPDATA%\wattdeck`. Asserting a fixed `wattdeck/config.toml` under the temp
+/// HOME is a Linux expectation, and it failed on the macOS runner
+/// (run 43064495565: the file went to
+/// `…/Library/Application Support/wattdeck/config.toml`). The app's own words
+/// name the file on every platform, so the test checks the named file: it
+/// exists, it is in a directory named after the app, and it is the starter
+/// config. The credential template is not asserted: an isolated HOME does not
+/// disable the keyring (the user bus is per-user).
 #[test]
 fn init_writes_the_starter_config_and_points_at_setup() {
     let dir = tempfile::tempdir().unwrap();
@@ -62,8 +71,32 @@ fn init_writes_the_starter_config_and_points_at_setup() {
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
-    let cfg = dir.path().join("wattdeck/config.toml");
-    assert!(cfg.exists(), "config written: {text}");
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("wrote ") && l.contains("config.toml"))
+        .unwrap_or_else(|| panic!("the app must name the config file it wrote: {text}"));
+    let path = Path::new(line.trim_start_matches("wrote "));
+    // `Path` is not `Display`, and a path may hold non-Unicode bytes, so the
+    // failure messages print `path.display()` (1.89.0 printed E0277 when the
+    // test interpolated `{path}`).
+    let shown = path.display();
+    assert!(
+        path.exists(),
+        "the named config file is not on disk: {text}"
+    );
+    let app_dir = path
+        .parent()
+        .unwrap_or_else(|| panic!("the config has no parent directory: {shown}"));
+    assert_eq!(
+        app_dir.file_name().and_then(|s| s.to_str()),
+        Some("wattdeck"),
+        "the config must live in the app's own directory: {shown}"
+    );
+    let body = std::fs::read_to_string(path).unwrap();
+    assert!(
+        body.contains("region = \"EU\""),
+        "the written file is not the starter config: {body}"
+    );
     assert!(
         text.contains("wattdeck setup"),
         "hint names the wizard: {text}"

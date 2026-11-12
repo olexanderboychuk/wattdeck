@@ -105,23 +105,27 @@ fn check_permissions(_path: &Path) {}
 
 /// How the plaintext file is protected, in words the platform can truthfully
 /// use. Unix reports the real mode; Windows has no unix permissions, so the
-/// honest words are the ones that name the actual protection.
+/// honest words are the ones that name the actual protection. The functions are
+/// per-platform, not one function with unused branches: a single signature
+/// takes `path` for the unix report and leaves it unused on Windows, which
+/// clippy `-D warnings` fails on the Windows runner (run 43064495565 printed
+/// `error: unused variable: path` at this line).
+#[cfg(unix)]
 pub fn protection(path: &Path) -> String {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path)
-            .map(|m| format!("{:o}", m.permissions().mode() & 0o777))
-            .unwrap_or_else(|_| "?".to_string())
-    }
-    #[cfg(windows)]
-    {
-        "protected by your Windows user profile".to_string()
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        "no unix permissions to report".to_string()
-    }
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| format!("{:o}", m.permissions().mode() & 0o777))
+        .unwrap_or_else(|_| "?".to_string())
+}
+
+#[cfg(windows)]
+pub fn protection(_path: &Path) -> String {
+    "protected by your Windows user profile".to_string()
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn protection(_path: &Path) -> String {
+    "no unix permissions to report".to_string()
 }
 
 /// The same words, for a file the app has not opened (the wizard prompt, the
