@@ -37,21 +37,25 @@ jobs:
           else
             cp "target/${{ matrix.target }}/release/wattdeck.exe" "$stage/"
             cp README.md LICENSE "$stage/"
-            # Absolute Windows paths, not relative ones: a relative path fails on
-            # the runner twice — `stage/*` (run 43200321636) and
-            # `stage/wattdeck.exe` (run 43201176802) both printed
-            # `The path '…' either does not exist or is not a valid file system
-            # path`, exit 1. PowerShell resolves `-Path` against its own working
-            # directory, which is not the Git Bash CWD that launched it, so the
-            # paths are built from `pwd -W` (Git Bash prints the Windows path for
-            # the current directory). A file list stores each entry at the archive
-            # root, and the two PowerShell checks below prove the layout on the
-            # runner: expand the archive and require `wattdeck.exe` at its root.
+            ls -l "$stage"
+            # Three earlier failures were one bug seen from three sides: this branch
+            # named the literal directory `stage/` while the stage variable is
+            # `dist` (line 31), so the paths it passed never existed. `stage/*`
+            # (run 43200321636), `stage/wattdeck.exe` (run 43201176802) and
+            # `D:/a/wattdeck/wattdeck/stage/wattdeck.exe` (run 43201941889) all
+            # failed with `The path '…' either does not exist or is not a valid file
+            # system path`, exit 1. The paths now come from the `$stage` variable
+            # and are absolute Windows paths built from `pwd -W` (Git Bash prints
+            # the Windows path of the current directory), because PowerShell
+            # resolves `-Path` against its own working directory, not the CWD that
+            # launched it. A file list stores each entry at the archive root; the
+            # two PowerShell checks below prove the layout on the runner: expand the
+            # archive and require `wattdeck.exe` at its root.
             win=$(pwd -W)
             case "$win" in
               /*) echo "pwd -W returned a POSIX path: $win"; exit 1 ;;
             esac
-            powershell -NoProfile -Command "Compress-Archive -Path '$win/stage/wattdeck.exe','$win/stage/README.md','$win/stage/LICENSE' -DestinationPath '$win/$asset'"
+            powershell -NoProfile -Command "Compress-Archive -Path '$win/$stage/wattdeck.exe','$win/$stage/README.md','$win/$stage/LICENSE' -DestinationPath '$win/$asset'"
             powershell -NoProfile -Command "Expand-Archive -Path '$win/$asset' -DestinationPath '$win/distcheck'; if (-not (Test-Path '$win/distcheck/wattdeck.exe')) { throw 'wattdeck.exe is not at the archive root' }"
           fi
           sha256sum "$asset" | sed "s# .*\$#  $asset#" > "$asset.sha256"
