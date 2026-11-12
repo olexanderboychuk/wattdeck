@@ -343,12 +343,12 @@ values for it. Controls for families other than DELTA 2 are not offered,
 because no verified command list exists for them in this project.
 
 CI on `ubuntu-latest`, `macos-latest` and `windows-latest`, on the pinned 1.89.0:
-fmt --check, clippy `-D warnings`, 235 library tests, the CLI tests, the platform
+fmt --check, clippy `-D warnings`, 249 library tests, the CLI tests, the platform
 tests, the release build for each target, `install.sh` and `install.ps1` tests,
 `install.ps1 -SelfTest` on the Windows runner, `render_frame`, and shellcheck on
 the shell files. That run is the evidence for the build/test claims on all three
 platforms, and `cargo install --git` was verified from the pushed `main`
-(toolchain 1.99.0, in 6m 52s, prints `wattdeck 0.1.0`).
+(toolchain 1.99.0, in 6m 52s, prints `wattdeck 0.2.0`).
 
 Still unverified, stated rather than glossed: macOS Keychain and Windows
 Credential Manager behaviour (the `keyring` crate supports both by design; only

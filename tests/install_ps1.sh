@@ -40,8 +40,9 @@ else
 fi
 cp "$built" "$release/bin/wattdeck.exe"
 # The tag equals the crate version, so the version rule below is the CI's rule
-# (release.yml compares `wattdeck 0.1.0` against the tag with `v` stripped).
-tag="v0.1.0"
+# (release.yml compares the crate version against the tag with `v` stripped).
+# Read from Cargo.toml so the test cannot go stale against a version bump.
+tag="v$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$repo/Cargo.toml")"
 target="x86_64-pc-windows-msvc"
 asset="wattdeck-$tag-$target.zip"
 # python3's zipfile stores the file's Unix mode in the archive, so

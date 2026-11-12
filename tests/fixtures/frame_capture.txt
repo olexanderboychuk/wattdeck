@@ -1,5 +1,5 @@
 ===== start =====
-WATTDECK 0.1.0 MOCK cloud online live data online                             ALERTS 2 13:42:17 UTC
+WATTDECK 0.2.0 MOCK cloud online live data online                             ALERTS 2 13:48:23 UTC
  DEVICES 2 SEL DELTA 2 Max UPDATED just now
 ┌ DEVICES ─────────────────────────────────────────────────────────────────────────────────────────┐
 │▶ DELTA 2 Max   online          82% IN   841 W OUT    66 W MO***************30 MOCK               │

@@ -140,10 +140,11 @@ jobs:
           test -x "$dest/wattdeck"
           case "$out" in *wattdeck*) ;; *) echo "no version line: $out"; exit 1 ;; esac
           version=$("$dest/wattdeck" --version)
-          # `wattdeck --version` prints the crate version, not the tag
-          # (tests/cli.rs:19-30 pins `wattdeck 0.1.0`), so the assertion
-          # compares the version against the tag with the leading `v` stripped,
-          # exactly as the pwsh step does.
+          # `wattdeck --version` prints the crate version, which the tag is
+          # required to match (tests/cli.rs pins `--version` to
+          # `env!("CARGO_PKG_VERSION")`), so the assertion compares the version
+          # against the tag with the leading `v` stripped, exactly as the pwsh
+          # step does.
           case "$version" in
             "wattdeck ${tag#v}") ;;
             *) echo "version line is not the tag: $version (tag $tag)"; exit 1 ;;
