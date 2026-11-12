@@ -92,13 +92,18 @@ jobs:
           (macOS and Linux) and
           `irm https://raw.githubusercontent.com/olexanderboychuk/wattdeck/main/install.ps1 | iex`
           (Windows). Both scripts verify the asset's SHA256 against `SHA256SUMS.txt`
-          before extracting, install to a user directory, and never use sudo.
+          before extracting, install to a user directory, and never use sudo. The
+          `verify-install` jobs in this run install from these assets on all three
+          OSes.
 
+          Verified: the build/test/clippy/fmt checks on `ubuntu-latest`,
+          `macos-latest` and `windows-latest` with the pinned 1.89.0, the installers on
+          all three OSes, and `cargo install --git` from the pushed `main`.
           Unverified, stated rather than glossed: macOS Keychain and Windows Credential
-          Manager behaviour (the `keyring` crate supports both by design; no macOS or
-          Windows machine has run wattdeck); the Windows console; the glibc floor of the
-          Linux binary (built on the runner's glibc, so it needs that glibc or newer);
-          `cargo install --git`.
+          Manager behaviour (the `keyring` crate supports both by design; only the
+          Secret Service has run wattdeck), the Windows console (no Windows machine has
+          run the TUI), the glibc floor of the Linux binary (built on the runner's
+          glibc, so it needs that glibc or newer).
           EOF
       - name: create the release
         run: |
