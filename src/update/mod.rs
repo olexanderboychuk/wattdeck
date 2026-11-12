@@ -1,6 +1,8 @@
 //! The launch check: latest release, SHA256 verify, install over the running
 //! binary. The network lives here; the UI receives one `Update::Release`.
 
+pub mod install;
+
 use std::path::PathBuf;
 
 use crate::config::settings::UpdateConfig;
