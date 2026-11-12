@@ -4,6 +4,7 @@ Terminal dashboard for EcoFlow power stations — live telemetry, history, alert
 One Rust binary: no web app, no Electron, no daemon, no cloud.
 
 [![CI](https://github.com/olexanderboychuk/wattdeck/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/olexanderboychuk/wattdeck/actions/workflows/ci.yml)
+[![MSRV](https://img.shields.io/badge/Rust-1.89.0%2B-blue)](#status)
 [![release](https://img.shields.io/github/v/release/olexanderboychuk/wattdeck)](https://github.com/olexanderboychuk/wattdeck/releases)
 [![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 ![Linux · macOS · Windows](https://img.shields.io/badge/Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-lightgrey)
@@ -61,7 +62,7 @@ can be verified without a network). `tests/install_sh.sh` and
 From source, or via cargo:
 
 ```
-cargo install --git https://github.com/olexanderboychuk/wattdeck   # verified in the v0.1.0 run
+cargo install --git https://github.com/olexanderboychuk/wattdeck   # verified from the pushed main, 2026-11-12
 git clone https://github.com/olexanderboychuk/wattdeck && cd wattdeck
 make           # full verify: build, tests, fmt --check, clippy
 make install   # into ~/.local/bin (override with PREFIX=…)
@@ -71,11 +72,12 @@ Requirements: Rust. `rust-toolchain.toml` pins 1.89.0, and that number is the
 floor the dependencies set, not a preference: rusqlite 0.41.1 and uuid 1.29.2
 declare `rust-version = "1.89.0"`, so cargo's own MSRV check refuses 1.88.0 (CI
 printed `rusqlite@0.41.1 requires rustc 1.89.0` on 2026-11-11, which is why the
-pin moved). Newer toolchains build it too — development is on 1.99.0. On Linux
-you need a C toolchain for the bundled SQLite build. GNU Make is convenient, not
-required. `make help` lists the targets: `make run` (mock), `make run-live`
-(real devices), `make run-debug` (mock + masked log file), `make test-install`,
-`make screenshots`.
+pin moved). All three CI runners build on the pinned 1.89.0 — each job prints
+`rustc 1.89.0 (29483883e 2025-08-04)` — and newer toolchains build it too:
+development is on 1.99.0. On Linux you need a C toolchain for the bundled SQLite
+build. GNU Make is convenient, not required. `make help` lists the targets:
+`make run` (mock), `make run-live` (real devices), `make run-debug` (mock +
+masked log file), `make test-install`, `make screenshots`.
 
 Then run the wizard once:
 
@@ -310,6 +312,7 @@ wattdeck export --format json
 - [Device support](docs/DEVICE_SUPPORT.md) — families, product types, property keys, which commands are verified
 - [Configuration](docs/CONFIGURATION.md) — every config key and its default
 - [Keyboard shortcuts](docs/KEYBOARD_SHORTCUTS.md)
+- [Security policy](SECURITY.md) — what is sensitive, where credentials live, what to do if keys leaked
 - [Development](docs/DEVELOPMENT.md) — build, test, mock mode, the live probes
 
 ## Status
@@ -321,13 +324,21 @@ on the same account is offline and the API refuses its property map
 values for it. Controls for families other than DELTA 2 are not offered,
 because no verified command list exists for them in this project.
 
-Unverified, stated rather than glossed: macOS Keychain and Windows Credential
-Manager behaviour, the Windows console, the glibc floor of the Linux binary,
-`cargo install --git`, and the absence of the targets that are not built (ARM
-Windows, ARM Linux, Intel Mac). The CI job on `ubuntu-latest`, `macos-latest`
-and `windows-latest` is the verification for the macOS and Windows claims and
-for the pinned 1.89.0 toolchain; before the first green CI run on those
-runners, they are claims.
+CI on `ubuntu-latest`, `macos-latest` and `windows-latest`, on the pinned 1.89.0:
+fmt --check, clippy `-D warnings`, 235 library tests, the CLI tests, the platform
+tests, the release build for each target, `install.sh` and `install.ps1` tests,
+`install.ps1 -SelfTest` on the Windows runner, `render_frame`, and shellcheck on
+the shell files. That run is the evidence for the build/test claims on all three
+platforms, and `cargo install --git` was verified from the pushed `main`
+(toolchain 1.99.0, in 6m 52s, prints `wattdeck 0.1.0`).
+
+Still unverified, stated rather than glossed: macOS Keychain and Windows
+Credential Manager behaviour (the `keyring` crate supports both by design; only
+the Secret Service has run wattdeck), the Windows console (no Windows machine has
+run the TUI — CI checks the installer, not the console), the glibc floor of the
+Linux binary (built on the runner's glibc, so it needs that glibc or newer), and
+the absence of the targets that are not built (ARM Windows, ARM Linux, Intel
+Mac).
 
 ## License
 
