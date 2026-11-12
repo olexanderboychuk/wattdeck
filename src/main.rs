@@ -224,6 +224,13 @@ high_output_w = 2000.0
 notify_disconnected = true
 cooldown_seconds = 600
 
+[update]
+# The launch check: one GitHub API request, verify the asset's SHA256, install.
+# Off means no network: enabled = false, or wattdeck --no-update
+enabled = true
+repo = "olexanderboychuk/wattdeck"
+timeout_seconds = 10
+
 [controls]
 enabled = false
 "#

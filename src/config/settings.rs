@@ -14,6 +14,7 @@ pub struct Config {
     pub alerts: AlertConfig,
     pub analytics: AnalyticsConfig,
     pub controls: ControlConfig,
+    pub update: UpdateConfig,
     /// Remapped keys: `action_name = "key"`, e.g. `quit = "ctrl+q"`.
     pub keys: std::collections::HashMap<String, String>,
     /// Where this config was loaded from; not part of the file itself.
@@ -237,6 +238,29 @@ pub struct ControlConfig {
     pub enabled: bool,
 }
 
+/// The launch update check. Mock runs skip it; `--no-update` forces it off for
+/// one run, whatever this says.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct UpdateConfig {
+    /// Off means no GitHub request, no download, nothing installed.
+    pub enabled: bool,
+    /// The fork escape hatch: the repo the latest-release query is aimed at.
+    pub repo: String,
+    /// Request timeout, seconds.
+    pub timeout_seconds: u64,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            repo: "olexanderboychuk/wattdeck".to_string(),
+            timeout_seconds: 10,
+        }
+    }
+}
+
 impl Config {
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
@@ -280,6 +304,15 @@ impl Config {
         anyhow::ensure!(
             self.mqtt.refresh_interval_seconds >= 10,
             "mqtt.refresh_interval_seconds must be at least 10 s"
+        );
+        anyhow::ensure!(
+            self.update.timeout_seconds >= 1 && self.update.timeout_seconds <= 60,
+            "update.timeout_seconds must be between 1 and 60, got {}",
+            self.update.timeout_seconds
+        );
+        anyhow::ensure!(
+            !self.update.repo.trim().is_empty(),
+            "update.repo must name a repo"
         );
         Ok(())
     }
@@ -332,5 +365,34 @@ mod tests {
     fn tick_matches_fps() {
         let cfg = Config::default();
         assert_eq!(cfg.tick_interval(), std::time::Duration::from_millis(33));
+    }
+
+    #[test]
+    fn update_defaults_check_every_launch() {
+        let cfg = Config::default();
+        assert!(cfg.update.enabled, "the launch check is on by default");
+        assert_eq!(cfg.update.repo, "olexanderboychuk/wattdeck");
+        assert_eq!(cfg.update.timeout_seconds, 10);
+    }
+
+    #[test]
+    fn update_timeout_outside_1_to_60_is_refused() {
+        let mut cfg = Config::default();
+        cfg.update.timeout_seconds = 0;
+        assert!(cfg.validate().is_err(), "0 s must be refused");
+        cfg.update.timeout_seconds = 61;
+        assert!(cfg.validate().is_err(), "61 s must be refused");
+        cfg.update.timeout_seconds = 10;
+        cfg.update.repo = "  ".to_string();
+        assert!(cfg.validate().is_err(), "an empty repo must be refused");
+    }
+
+    #[test]
+    fn config_toml_without_an_update_section_uses_defaults() {
+        let cfg: Config = toml::from_str("[api]\nregion = \"US\"\n").unwrap();
+        assert!(
+            cfg.update.enabled,
+            "a config file may name no [update] section"
+        );
     }
 }

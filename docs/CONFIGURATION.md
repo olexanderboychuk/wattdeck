@@ -118,6 +118,18 @@ Enabling controls does not send anything: a command needs a pick (`c` /
 offline, if the value is outside the range, or if the device has reported no
 settings. See [device support](DEVICE_SUPPORT.md) for the verified command list.
 
+## `[update]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | Check for a new build on every launch, verify the asset's SHA256, install it, and say `restart to apply`. `false`, or `wattdeck --no-update`, means no network. A mock run never checks, whatever this says |
+| `repo` | `"olexanderboychuk/wattdeck"` | The fork escape hatch: the repo the latest-release query is aimed at |
+| `timeout_seconds` | `10` | **1–60.** GitHub request timeout |
+
+`wattdeck update` runs the same check without the TUI: check, verify, install,
+print what happened. The check is one unauthenticated GitHub API request per
+launch; GitHub's documented limit is 60 requests per hour per IP.
+
 ## `[keys]`
 
 Remapping: `action_name = "key"`, e.g. `quit = "ctrl+q"`. Actions are the names
@@ -133,6 +145,7 @@ read-only: no navigation key sends a command.
 `Config::validate()` runs on load and refuses: `fps` outside 1–60,
 `api.refresh_interval_seconds` < 5, `history.sample_interval_seconds` < 1,
 `retention_days` < 1, `memory_samples` < 8, negative `tariff_per_kwh`,
-`battery_critical_percent` > `battery_low_percent`, and
-`mqtt.refresh_interval_seconds` < 10. The app refuses to start on a config that
-would poll faster than the API tolerates.
+`battery_critical_percent` > `battery_low_percent`,
+`mqtt.refresh_interval_seconds` < 10, `update.timeout_seconds` outside 1–60, and
+an empty `update.repo`. The app refuses to start on a config that would poll
+faster than the API tolerates.
