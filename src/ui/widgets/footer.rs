@@ -39,6 +39,16 @@ pub fn draw(app: &App, frame: &mut Frame, area: Rect) {
                 }),
         ));
     }
+    // The running process is the old binary: the new one is on disk, so the
+    // honest message is a restart, not a reload.
+    if let Some(crate::update::Status::Applied { to, .. }) = &app.release {
+        left.push(Span::styled(
+            format!(" restart to apply {to} "),
+            Style::default()
+                .fg(theme.accent())
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     let right = vec![Span::styled(
         format!(
             "{} device · {} help · {} quit ",
