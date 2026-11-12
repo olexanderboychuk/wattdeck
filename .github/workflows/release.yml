@@ -37,11 +37,15 @@ jobs:
           else
             cp "target/${{ matrix.target }}/release/wattdeck.exe" "$stage/"
             cp README.md LICENSE "$stage/"
-            # Compress-Archive with a wildcard stores the files at the archive
-            # root, which is what install.ps1 expands (wattdeck.exe at the root).
-            # Verified on PowerShell 7.7.0 by compressing a stage dir and reading
-            # the zip's entries.
-            powershell -NoProfile -Command "Compress-Archive -Path 'stage/*' -DestinationPath '${asset}'"
+            # Explicit file paths, not a wildcard: `Compress-Archive -Path 'stage/*'`
+            # fails on the runner with `The path 'stage/*' either does not exist or
+            # is not a valid file system path` (run 43200321636, 2026-11-12, exit
+            # code 1), because PowerShell treats the argument as one filesystem
+            # path. A file list stores each entry at the archive root, which is
+            # what install.ps1 expands (`wattdeck.exe` at the root). The
+            # verify-install job's Windows step is the check that the expanded
+            # archive contains the binary.
+            powershell -NoProfile -Command "Compress-Archive -Path 'stage/wattdeck.exe','stage/README.md','stage/LICENSE' -DestinationPath '${asset}'"
           fi
           sha256sum "$asset" | sed "s# .*\$#  $asset#" > "$asset.sha256"
       - uses: actions/upload-artifact@v4
