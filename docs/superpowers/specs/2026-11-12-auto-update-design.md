@@ -80,11 +80,15 @@ frame.
 
 ## Components
 
-`src/update/mod.rs` — the check. Owns `Status { Available { to }, Applied { from, to },
+`src/update/mod.rs` — the check. Owns `Status { UpToDate, Available { to }, Applied { from, to },
 Failed(String) }`, the API request, the tag parse, the version compare, the target
 triple and asset name, the download, the SHA256 verify, and the seams. `Available`
 is a transient state: it is traced, never drawn; a silent apply goes straight to
-`Applied`.
+`Applied`. `UpToDate` is what `wattdeck update` prints as `is the latest build`,
+and what a launch traces. The install target is a **parameter** of the check, not
+`current_exe()` inside the module: a unit test that installs over the running
+test binary would destroy it, so the target is passed in and the caller supplies
+`current_exe()`.
 
 `src/update/install.rs` — the install. Owns extract (external `tar`), the new
 binary's mode, the rename onto `current_exe()`, the Windows `.old` rename, and the
