@@ -24,6 +24,7 @@ fn update_installs_a_verified_asset_and_says_restart() {
     std::fs::create_dir_all(&marker_dir).unwrap();
     let marker = marker_dir.join("wattdeck");
     std::fs::write(&marker, "#!/bin/sh\necho \"wattdeck 9.9.9\"\n").unwrap();
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o755)).unwrap();

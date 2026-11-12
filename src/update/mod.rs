@@ -538,8 +538,12 @@ mod tests {
     /// The live request, on the real endpoint. `current` is the package version,
     /// so the released version cannot be newer than it; the target is a temp file,
     /// so this test can never install anything. It is the check the launch does,
-    /// against GitHub, once per test run.
+    /// against GitHub. Ignored by default: CI runners share an IP, GitHub's
+    /// documented limit is 60 requests per hour per IP, and the macOS runner's
+    /// request answered a refusal on 2026-11-12 at 15:05:42 — a network test in CI
+    /// is flaky. Run it by hand: `cargo test --lib update -- --include-ignored`.
     #[tokio::test]
+    #[ignore = "live probe: one request to the real GitHub endpoint, on a shared IP"]
     async fn the_live_check_of_the_released_version_is_one_request() {
         let dir = tempfile::tempdir().unwrap();
         let status = run(
