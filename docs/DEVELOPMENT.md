@@ -54,6 +54,11 @@ value)` is the single accept path the tests use.
 Mock runs never write history, mock serials are placeholders, and every mock
 screen shows the `MOCK` badge.
 
+A mock run does no network, so the launch check is skipped in mock mode whatever
+the config says. The one exception is test-only: a mock run does the check when
+`WATTDECK_RELEASE_DIR` is set, because that path reads a local directory, so the
+footer line and the Alerts entry are verifiable offline.
+
 ## The terminal, without a terminal
 
 `script` is not installed, so PTY verification uses
@@ -88,6 +93,15 @@ backend line, and the API's own reply. Use dummy values: a wizard run writes to
 the real keyring, and the dummy entries get cleared afterwards. Mock runs capture
 the Alerts screen (`4`) to check the hint line naming `wattdeck setup`.
 
+The same probe shows the launch check's surface, offline through the seams: copy
+the release binary to a temp dir, put a `tar.gz` containing a marker binary and a
+`SHA256SUMS.txt` in a second temp dir, then
+`keyprobe.py 100 26 'zzzzzzzzzzzz4q' env HOME=… WATTDECK_RELEASE_DIR=… WATTDECK_TAG=v9.9.9 <copy>/wattdeck --mock`.
+The frame after the twelve `z` presses carries `restart to apply 9.9.9` in the
+footer, key `4` is the Alerts line `updated wattdeck 0.2.0 → 9.9.9 · restart to
+apply`, and the frame after `q` is the stdout line printed once the terminal is
+restored.
+
 ## Live probes
 
 Live probes are separate crates under `/tmp/opencode` that use this project as a
@@ -108,6 +122,8 @@ Verified live, in this project:
   published and never answered; a partial-param command half-applied
   (`inv.SlowChgWatts` moved to a value that was never sent) and never answered
 - history rows, event rows, plain serials in the database = 0, JSON export clean
+- `wattdeck update` against the real latest-release endpoint, and the install over
+  the installed binary
 
 **Live publishing changes the device.** A probe sends the value the device
 reported, i.e. an echo, and re-reads the property map afterwards to prove

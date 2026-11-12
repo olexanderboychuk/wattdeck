@@ -44,7 +44,7 @@
 - Consumes: nothing.
 - Produces: `wattdeck::config::settings::UpdateConfig { pub enabled: bool, pub repo: String, pub timeout_seconds: u64 }` with `Default` = `enabled: true`, `repo: "olexanderboychuk/wattdeck"`, `timeout_seconds: 10`; `Config::update: UpdateConfig`; `Config::validate()` rejects `update.timeout_seconds` outside 1..=60 and an empty `update.repo`.
 
-- [ ] **Step 1: Write the failing tests** — append to the `#[cfg(test)] mod tests` block in `src/config/settings.rs`:
+- [x] **Step 1: Write the failing tests** — append to the `#[cfg(test)] mod tests` block in `src/config/settings.rs`:
 
 ```rust
 #[test]
@@ -74,12 +74,12 @@ fn config_toml_without_an_update_section_uses_defaults() {
 }
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `LD_LIBRARY_PATH=$HOME/.local/rust-1.99.0/lib $HOME/.local/rust-1.99.0/bin/cargo test --lib config -v`
 Expected: FAIL — `no field 'update'` / `cannot find UpdateConfig` (compile error).
 
-- [ ] **Step 3: Write the implementation** — in `src/config/settings.rs`, after `ControlConfig`'s `Default` impl, add:
+- [x] **Step 3: Write the implementation** — in `src/config/settings.rs`, after `ControlConfig`'s `Default` impl, add:
 
 ```rust
 /// The launch update check. Mock runs skip it; `--no-update` forces it off for
@@ -127,7 +127,7 @@ Add the rules inside `Config::validate()`, before `Ok(())`:
         );
 ```
 
-- [ ] **Step 4: Add `[update]` to the starter config** — in `src/main.rs`'s `starter_config`, before the closing `[controls]` block:
+- [x] **Step 4: Add `[update]` to the starter config** — in `src/main.rs`'s `starter_config`, before the closing `[controls]` block:
 
 ```
 [update]
@@ -138,12 +138,12 @@ repo = "olexanderboychuk/wattdeck"
 timeout_seconds = 10
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `LD_LIBRARY_PATH=$HOME/.local/rust-1.99.0/lib $HOME/.local/rust-1.99.0/bin/cargo test --lib config -v`
 Expected: PASS, including the existing `init_writes_the_starter_config_and_points_at_setup` (it asserts `region = "EU"` is in the starter file, which is unchanged).
 
-- [ ] **Step 6: Document the keys** — in `docs/CONFIGURATION.md`, add after the `[controls]` section:
+- [x] **Step 6: Document the keys** — in `docs/CONFIGURATION.md`, add after the `[controls]` section:
 
 ```markdown
 ## `[update]`
@@ -161,7 +161,7 @@ launch; GitHub's documented limit is 60 requests per hour per IP.
 
 and add to the `## Validation` paragraph: `… and `update.timeout_seconds` outside 1–60, or an empty `update.repo`. The app refuses to start on a config that …` (keep the existing sentence, extend the list).
 
-- [ ] **Step 7: Full verify, then commit**
+- [x] **Step 7: Full verify, then commit**
 
 Run: `make fmt && make test && make clippy`
 Expected: PASS on all three.
@@ -189,7 +189,7 @@ git commit -m "The [update] section: one check per launch, 1-60 s timeout, the r
   - `pub fn is_newer(tag: &str, current: &str) -> bool`
   - `pub fn launch_check(cfg: &UpdateConfig, no_update: bool, mock: bool, s: &Seams) -> bool`
 
-- [ ] **Step 1: Write the failing tests** — `src/update/mod.rs`, tests at the bottom of the file:
+- [x] **Step 1: Write the failing tests** — `src/update/mod.rs`, tests at the bottom of the file:
 
 ```rust
 #[cfg(test)]
@@ -232,12 +232,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `LD_LIBRARY_PATH=$HOME/.local/rust-1.99.0/lib $HOME/.local/rust-1.99.0/bin/cargo test --lib update -v`
 Expected: FAIL — the module does not exist.
 
-- [ ] **Step 3: Write the implementation** — `src/lib.rs`, add after `pub mod telemetry;` (keep alphabetical order: `update` between `telemetry` and `ui`):
+- [x] **Step 3: Write the implementation** — `src/lib.rs`, add after `pub mod telemetry;` (keep alphabetical order: `update` between `telemetry` and `ui`):
 
 ```rust
 pub mod update;
@@ -308,12 +308,12 @@ pub fn launch_check(cfg: &UpdateConfig, no_update: bool, mock: bool, s: &Seams) 
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `LD_LIBRARY_PATH=$HOME/.local/rust-1.99.0/lib $HOME/.local/rust-1.99.0/bin/cargo test --lib update -v`
 Expected: PASS.
 
-- [ ] **Step 5: Full verify, then commit**
+- [x] **Step 5: Full verify, then commit**
 
 Run: `make fmt && make test && make clippy`
 
@@ -339,7 +339,7 @@ git commit -m "The update module: numeric tag compare, the test seams, and a lau
   - `pub fn expected_hash(sums: &str, asset: &str) -> Option<String>`
   - `pub fn sha256_of(bytes: &[u8]) -> String`
 
-- [ ] **Step 1: Write the failing tests** — append to `src/update/mod.rs`'s `tests`:
+- [x] **Step 1: Write the failing tests** — append to `src/update/mod.rs`'s `tests`:
 
 ```rust
 #[test]
@@ -391,12 +391,12 @@ fn the_hash_of_the_empty_input_is_the_published_one() {
 }
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `LD_LIBRARY_PATH=$HOME/.local/rust-1.99.0/lib $HOME/.local/rust-1.99.0/bin/cargo test --lib update -v`
 Expected: FAIL — `target_for`, `asset_name`, `expected_hash`, `sha256_of` are not defined.
 
-- [ ] **Step 3: Write the implementation** — append to `src/update/mod.rs`:
+- [x] **Step 3: Write the implementation** — append to `src/update/mod.rs`:
 
 ```rust
 /// The asset for one target, and the binary name inside it.
@@ -465,12 +465,12 @@ pub fn sha256_of(bytes: &[u8]) -> String {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `LD_LIBRARY_PATH=$HOME/.local/rust-1.99.0/lib $HOME/.local/rust-1.99.0/bin/cargo test --lib update -v`
 Expected: PASS.
 
-- [ ] **Step 5: Full verify, then commit**
+- [x] **Step 5: Full verify, then commit**
 
 Run: `make fmt && make test && make clippy`
 
@@ -497,7 +497,7 @@ git commit -m "Target table, asset name, and the SHA256SUMS parse: the app's ref
 
 This file does no network. One purpose: take verified bytes and put them where the binary lives.
 
-- [ ] **Step 1: Write the failing tests** — `src/update/install.rs`, at the bottom:
+- [x] **Step 1: Write the failing tests** — `src/update/install.rs`, at the bottom:
 
 ```rust
 #[cfg(test)]
@@ -583,12 +583,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `LD_LIBRARY_PATH=$HOME/.local/rust-1.99.0/lib $HOME/.local/rust-1.99.0/bin/cargo test --lib install -v`
 Expected: FAIL — the module is missing.
 
-- [ ] **Step 3: Write the implementation** — `src/update/install.rs`:
+- [x] **Step 3: Write the implementation** — `src/update/install.rs`:
 
 ```rust
 //! Verified bytes to the binary's own location. No network.
@@ -677,12 +677,12 @@ and in `src/update/mod.rs`, after the module doc comment at the top:
 pub mod install;
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `LD_LIBRARY_PATH=$HOME/.local/rust-1.99.0/lib $HOME/.local/rust-1.99.0/bin/cargo test --lib install -v`
 Expected: PASS.
 
-- [ ] **Step 5: Full verify, then commit**
+- [x] **Step 5: Full verify, then commit**
 
 Run: `make fmt && make test && make clippy`
 
@@ -706,7 +706,7 @@ git commit -m "Self-replace: staged rename in the target's own directory, mode 7
   - `pub async fn run_with_seams(cfg: &UpdateConfig, current: &str, cache: &Path, target: &Path, tx: Option<&tokio::sync::mpsc::Sender<Update>>, s: &Seams) -> Result<Status, String>`
   - `pub async fn run(cfg: &UpdateConfig, current: &str, cache: &Path, target: &Path, tx: Option<&mpsc::Sender<Update>>) -> Status`
 
-- [ ] **Step 1: Write the failing tests** — append to `src/update/mod.rs`'s `tests`:
+- [x] **Step 1: Write the failing tests** — append to `src/update/mod.rs`'s `tests`:
 
 ```rust
 #[cfg(unix)]
@@ -844,12 +844,12 @@ fn a_tag_that_is_not_newer_is_up_to_date() {
 }
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `LD_LIBRARY_PATH=$HOME/.local/rust-1.99.0/lib $HOME/.local/rust-1.99.0/bin/cargo test --lib update -v`
 Expected: FAIL — `run_with_seams` is not defined.
 
-- [ ] **Step 3: Write the implementation** — append to `src/update/mod.rs`:
+- [x] **Step 3: Write the implementation** — append to `src/update/mod.rs`:
 
 ```rust
 use std::path::Path;
@@ -1024,12 +1024,12 @@ pub async fn run(
 
 `run_with_seams` returns `Result<Status, String>` so a test can tell a refusal from a failure of its own fixture; `run` folds the error into `Status::Failed`, which is what the launch path reports.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `LD_LIBRARY_PATH=$HOME/.local/rust-1.99.0/lib $HOME/.local/rust-1.99.0/bin/cargo test --lib update -v`
 Expected: PASS.
 
-- [ ] **Step 5: Full verify, then commit**
+- [x] **Step 5: Full verify, then commit**
 
 Run: `make fmt && make test && make clippy`
 
@@ -1054,7 +1054,7 @@ git commit -m "The check pipeline: SHA256 before extract, install over the targe
   - `AlertKind::Update`
   - `App::release: Option<crate::update::Status>`, a public field the footer reads
 
-- [ ] **Step 1: Write the failing tests** — append to `src/app.rs`'s `#[cfg(test)] mod tests`:
+- [x] **Step 1: Write the failing tests** — append to `src/app.rs`'s `#[cfg(test)] mod tests`:
 
 ```rust
 #[test]
@@ -1106,12 +1106,12 @@ fn a_newer_tag_available_is_recorded_without_an_alert() {
 }
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `LD_LIBRARY_PATH=$HOME/.local/rust-1.99.0/lib $HOME/.local/rust-1.99.0/bin/cargo test --lib app -v`
 Expected: FAIL — `Update::Release` and `App::release` do not exist.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `src/services/mod.rs`, inside `pub enum Update`, after `ControlReply { … }`:
 
@@ -1179,12 +1179,12 @@ In `App::apply_update`, after the `Update::History(…)` arm, before `Update::No
     }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `LD_LIBRARY_PATH=$HOME/.local/rust-1.99.0/lib $HOME/.local/rust-1.99.0/bin/cargo test --lib app -v`
 Expected: PASS.
 
-- [ ] **Step 5: Full verify, then commit**
+- [x] **Step 5: Full verify, then commit**
 
 Run: `make fmt && make test && make clippy`
 
@@ -1206,7 +1206,7 @@ git commit -m "The update check reaches the UI as one Update: the footer segment
 - Consumes: `wattdeck::update::run`, `launch_check`, `seams`, `Status`, `install::cleanup_stale`, `App::release`.
 - Produces: the CLI surface `wattdeck --no-update`, `wattdeck update`; the stdout line after `restore_terminal()`.
 
-- [ ] **Step 1: Write the failing tests** — append to `tests/cli.rs`:
+- [x] **Step 1: Write the failing tests** — append to `tests/cli.rs`:
 
 ```rust
 /// The launch check is opt-out, and the headless path is a subcommand. `--help` is
@@ -1357,12 +1357,12 @@ fn an_asset_missing_from_the_sums_is_a_named_refusal() {
 }
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `LD_LIBRARY_PATH=$HOME/.local/rust-1.99.0/lib $HOME/.local/rust-1.99.0/bin/cargo test --test cli --test update -v`
 Expected: FAIL — `--no-update` / `update` are not in help, and `wattdeck update` exits with a clap "unrecognized subcommand" error.
 
-- [ ] **Step 3: Write the implementation** — `src/main.rs`.
+- [x] **Step 3: Write the implementation** — `src/main.rs`.
 
 In `struct Cli`, after the `scenario` field:
 
@@ -1487,12 +1487,12 @@ At the end of `run_tui`, replace `restore_terminal()?;` + `result` with:
     result
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `LD_LIBRARY_PATH=$HOME/.local/rust-1.99.0/lib $HOME/.local/rust-1.99.0/bin/cargo test --test cli --test update -v`
 Expected: PASS.
 
-- [ ] **Step 5: Full verify, then commit**
+- [x] **Step 5: Full verify, then commit**
 
 Run: `make fmt && make test && make clippy`
 
@@ -1516,7 +1516,7 @@ git commit -m "wattdeck update and --no-update: the check runs as a task, instal
 - Consumes: the shipped surface from Tasks 1-7.
 - Produces: documentation that states what is verified and labels what is not.
 
-- [ ] **Step 1: README CLI surface** — replace the fenced block at 319-325 with:
+- [x] **Step 1: README CLI surface** — replace the fenced block at 319-325 with:
 
 ```markdown
 ```
@@ -1529,7 +1529,7 @@ wattdeck export --format json
 ```
 ```
 
-- [ ] **Step 2: README Install** — add after the paragraph that ends `…those targets are not built.`:
+- [x] **Step 2: README Install** — add after the paragraph that ends `…those targets are not built.`:
 
 ```markdown
 Once installed, wattdeck checks for a newer release on launch: one GitHub API
@@ -1540,7 +1540,7 @@ line it prints after you quit. `[update] enabled = false` or `wattdeck --no-upda
 turns it off, and `wattdeck update` runs the same check with no TUI.
 ```
 
-- [ ] **Step 3: README FAQ, three paragraphs rewritten verbatim**
+- [x] **Step 3: README FAQ, three paragraphs rewritten verbatim**
 
 `**Is it safe to run?**` — replace the last sentence:
 
@@ -1570,7 +1570,7 @@ refresh interval and the MQTT subscription — the app does not poll faster than
 set.
 ```
 
-- [ ] **Step 4: README Troubleshooting** — replace the `no latest release` bullet and add the `tar` bullet:
+- [x] **Step 4: README Troubleshooting** — replace the `no latest release` bullet and add the `tar` bullet:
 
 ```markdown
 - **`no latest release` from the installer or the launch check**: GitHub's rate
@@ -1582,7 +1582,7 @@ set.
   way.
 ```
 
-- [ ] **Step 5: `docs/ARCHITECTURE.md`** — in the shape diagram, add the third source line, so the diagram reads:
+- [x] **Step 5: `docs/ARCHITECTURE.md`** — in the shape diagram, add the third source line, so the diagram reads:
 
 ```markdown
 ```
@@ -1606,7 +1606,7 @@ and add the bullet after the `secrets/` bullet:
   printed restart line read the state `App` made from it.
 ```
 
-- [ ] **Step 6: `docs/DEVELOPMENT.md`** — in `## Mock mode`, add:
+- [x] **Step 6: `docs/DEVELOPMENT.md`** — in `## Mock mode`, add:
 
 ```markdown
 A mock run does no network, so the launch check is skipped in mock mode whatever
@@ -1635,7 +1635,7 @@ in `## Live probes`, add to the verified list once the live run is done (Step 8)
   the installed binary
 ```
 
-- [ ] **Step 7: `SECURITY.md`** — in `## Out of scope for this project`, add:
+- [x] **Step 7: `SECURITY.md`** — in `## Out of scope for this project`, add:
 
 ```markdown
 The launch update check verifies the downloaded asset against the SHA256 published
@@ -1644,7 +1644,7 @@ directory the binary already lives in: no sudo, no elevated write, no code signi
 and no verification beyond the published checksums.
 ```
 
-- [ ] **Step 8: The full verify, in order**
+- [x] **Step 8: The full verify, in order**
 
 ```bash
 make            # build, all tests, fmt --check, clippy
@@ -1677,7 +1677,7 @@ Then the live probe, the real GitHub endpoint:
 
 Record what it printed. `wattdeck 0.2.0 is the latest build` is the expected answer while `v0.2.0` is the newest release; a newer tag means the install ran and the restart line printed. Run it a second time: the second run must print `wattdeck 0.2.0 is the latest build` against the real endpoint, and `wattdeck --version` must print the version the installed binary carries.
 
-- [ ] **Step 9: Update the test count in `README.md`'s Status section** — `cargo test --lib` prints the count; replace `249 library tests` with the number the run printed, and add to the "Still unverified" paragraph:
+- [x] **Step 9: Update the test count in `README.md`'s Status section** — `cargo test --lib` prints the count; replace `249 library tests` with the number the run printed, and add to the "Still unverified" paragraph:
 
 ```markdown
 the Windows self-replace (the rename of a running `wattdeck.exe`, `bsdtar`'s zip
@@ -1687,7 +1687,7 @@ the launch check (one request per launch is the documented exposure; the rate-li
 refusal path is tested offline through the seams, not against a throttled IP).
 ```
 
-- [ ] **Step 10: Clean up, then commit**
+- [x] **Step 10: Clean up, then commit**
 
 ```bash
 rm -rf /tmp/wattdeck-up

@@ -45,3 +45,8 @@ does not sign its binaries, and it does not verify downloads against any
 signature beyond the SHA256 checksums published in the release. If your threat
 model includes an attacker who can write to your config directory, the file-mode
 protection is not a defense.
+
+The launch update check verifies the downloaded asset against the SHA256 published
+in the release, extracts it with the system `tar`, and installs it into the
+directory the binary already lives in: no sudo, no elevated write, no code signing,
+and no verification beyond the published checksums.

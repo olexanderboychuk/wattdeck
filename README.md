@@ -53,6 +53,13 @@ Built targets: `x86_64-unknown-linux-gnu` (Linux x86_64),
 not built. The Linux binary is built on GitHub's runner, so it needs that
 runner's glibc or newer.
 
+Once installed, wattdeck checks for a newer release on launch: one GitHub API
+request, the asset's SHA256 verified against `SHA256SUMS.txt` **before** anything
+is extracted, installed over the binary you launched, and the app says
+`restart to apply the new build` in the footer, in the Alerts screen, and in the
+line it prints after you quit. `[update] enabled = false` or `wattdeck --no-update`
+turns it off, and `wattdeck update` runs the same check with no TUI.
+
 Three environment variables are test seams, documented as test-only:
 `WATTDECK_INSTALL_DIR` (where to install), `WATTDECK_TAG` (which tag to install)
 and `WATTDECK_RELEASE_DIR` (a local directory of release assets, so the install
@@ -262,20 +269,27 @@ write no history.
 
 **Is it safe to run?** It reads. Controls are off by default, `--read-only`
 forces them off, and a command needs pick + value + confirmation. The first run
-on a fresh machine contacts nothing.
+on a fresh machine contacts nothing, and a mock run contacts nothing at any time,
+whatever the config says. The launch check runs only in a run that is not mock, it
+is one request to GitHub, and `wattdeck --no-update` turns it off.
 
 **What goes into the history file?** Timestamped samples with the masked serial,
 the model, SOC, power in and out, temperatures, and the source label. No plain
 serial, no keys. `[verified]` — checked by reading the rows back.
 
 **Does it work offline?** Mock mode does. Live mode needs the network, and
-refuses with a message naming the way in when there are no credentials.
+refuses with a message naming the way in when there are no credentials. The launch
+check needs GitHub; offline it refuses by name, is traced, and the app runs on the
+build you have.
 
 **Rate limits?** The installer makes one unauthenticated GitHub API request per
-install to find the latest tag; GitHub's documented limit is 60 requests per
-hour per IP, and `WATTDECK_TAG` + `WATTDECK_RELEASE_DIR` let you skip that
-request entirely. The app's request rate is the configured refresh interval and
-the MQTT subscription — the app does not poll faster than you set.
+install to find the latest tag; GitHub's documented limit is 60 requests per hour
+per IP, and `WATTDECK_TAG` + `WATTDECK_RELEASE_DIR` let you skip that request
+entirely. The launch check makes the same single request per launch, against the
+same limit: `[update] enabled = false` or `--no-update` skips it, and the check is
+skipped in mock mode. The app's request rate to the EcoFlow API is the configured
+refresh interval and the MQTT subscription — the app does not poll faster than you
+set.
 
 **Why are the serials masked?** The serial identifies your device and, with the
 API keys, your account. Masked by default everywhere, switchable with `i`.
@@ -301,8 +315,13 @@ renders when state changes.
 - **Windows console**: the terminal behaviour on Windows is **labelled
   unverified** (no Windows machine has run wattdeck); the install script's
   self-test and the CI Windows job check the installer, not the console.
-- **`no latest release` from the installer**: GitHub's rate limit, and the
-  escape hatch is `WATTDECK_TAG` + `WATTDECK_RELEASE_DIR`.
+- **`no latest release` from the installer or the launch check**: GitHub's rate
+  limit, and the escape hatch is `WATTDECK_TAG` + `WATTDECK_RELEASE_DIR` for the
+  installer, `[update] enabled = false` or `--no-update` for the app.
+- **`no tar found; install the binary from source`**: the launch check extracts the
+  release asset with the system `tar` (`tar.exe` ships in `System32` on Windows
+  10 and later). Build from source, or use `install.sh`, which uses `tar` the same
+  way.
 
 ## Keyboard
 
@@ -317,8 +336,9 @@ configurable in `[keys]` in `config.toml`.
 ## CLI surface
 
 ```
-wattdeck --config PATH --debug --mock --live --device SERIAL --read-only --scenario NAME --init
+wattdeck --config PATH --debug --mock --live --device SERIAL --read-only --scenario NAME --no-update --init
 wattdeck setup      # the wizard
+wattdeck update     # check, verify, install, print what happened
 wattdeck devices    # device list
 wattdeck status     # one-shot summary
 wattdeck export --format json
@@ -344,7 +364,8 @@ values for it. Controls for families other than DELTA 2 are not offered,
 because no verified command list exists for them in this project.
 
 CI on `ubuntu-latest`, `macos-latest` and `windows-latest`, on the pinned 1.89.0:
-fmt --check, clippy `-D warnings`, 249 library tests, the CLI tests, the platform
+fmt --check, clippy `-D warnings`, 268 library tests, the CLI tests, the update
+tests, the platform
 tests, the release build for each target, `install.sh` and `install.ps1` tests,
 `install.ps1 -SelfTest` on the Windows runner, `render_frame`, and shellcheck on
 the shell files. That run is the evidence for the build/test claims on all three
@@ -357,7 +378,12 @@ the Secret Service has run wattdeck), the Windows console (no Windows machine ha
 run the TUI — CI checks the installer, not the console), the glibc floor of the
 Linux binary (built on the runner's glibc, so it needs that glibc or newer), and
 the absence of the targets that are not built (ARM Windows, ARM Linux, Intel
-Mac).
+Mac), the Windows self-replace (the rename of a running `wattdeck.exe`, `bsdtar`'s
+zip handling, the `.old` cleanup — CI compiles and tests the Windows target, and
+the install test is skipped by name on Windows), and the GitHub rate-limit
+behaviour of the launch check (one request per launch is the documented exposure;
+the rate-limit refusal path is tested offline through the seams, not against a
+throttled IP).
 
 ## License
 
