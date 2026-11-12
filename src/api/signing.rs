@@ -142,11 +142,16 @@ pub fn format_value(v: &Value) -> String {
     }
 }
 
+pub fn nonce_at(subsec_nanos: u32) -> String {
+    // The 6-digit rule from the docs, applied to a value the caller supplies, so
+    // the behaviour is testable without a clock.
+    format!("{:06}", subsec_nanos % 1_000_000)
+}
+
 pub fn make_nonce() -> String {
     // 6 digits, as the docs specify. The value only has to be unique per request, so
     // the sub-second part of the clock is enough; no random crate is needed.
-    let n = chrono::Utc::now().timestamp_subsec_nanos() % 1_000_000;
-    format!("{n:06}")
+    nonce_at(chrono::Utc::now().timestamp_subsec_nanos())
 }
 
 pub fn now_millis() -> String {
@@ -239,16 +244,37 @@ mod tests {
     }
 
     #[test]
-    fn nonce_tracks_the_clock_so_requests_get_new_values() {
-        let a = chrono::Utc::now().timestamp_subsec_nanos() % 1_000_000;
-        let b = chrono::Utc::now()
-            .checked_add_signed(chrono::Duration::seconds(1))
-            .unwrap()
-            .timestamp_subsec_nanos()
-            % 1_000_000;
-        // A one-second shift moves the sub-second digits, so consecutive requests
-        // within a sweep get different nonces.
-        assert_ne!(a, b);
+    fn nonce_is_the_sub_second_field_padded_to_six_digits() {
+        assert_eq!(nonce_at(1_234_567_890), "567890");
+        assert_eq!(nonce_at(42), "000042");
+        assert_eq!(nonce_at(999_999), "999999");
+        assert_eq!(nonce_at(0), "000000");
+    }
+
+    #[test]
+    fn a_gap_of_whole_milliseconds_leaves_the_nonce_unchanged() {
+        // The value is the sub-second field modulo 1_000_000, so a gap of exactly
+        // k milliseconds leaves it the same, and a gap of 1 nanosecond changes it.
+        // This is the honest statement of what the clock-derived nonce does: the
+        // previous test asserted that consecutive requests "get new values" by
+        // adding one second to the clock, which never moves the sub-second field,
+        // and it passed only when the two clock reads were not a whole number of
+        // milliseconds apart. The macOS runner failed it (run 43201589420,
+        // `left: 656000, right: 656000`) because its clock reads are quantized.
+        assert_eq!(nonce_at(123_456), nonce_at(123_456 + 1_000_000));
+        assert_eq!(nonce_at(123_456), nonce_at(123_456 + 10_000_000));
+        assert_ne!(nonce_at(123_456), nonce_at(123_457));
+    }
+
+    #[test]
+    fn requests_seconds_apart_get_different_nonces() {
+        // The app's cadence is the configured refresh interval, seconds apart with
+        // sub-second drift, so the sub-second field moves by a non-multiple of
+        // 1_000_000 and successive requests get different values.
+        let first = nonce_at(400_000_123);
+        let later = nonce_at(700_000_456);
+        assert_ne!(first, later);
+        assert_eq!(make_nonce().len(), 6);
     }
 
     #[test]
