@@ -156,6 +156,12 @@ pub struct App {
     /// The control the user is about to send, before the confirmation dialog.
     pub pending_control: Option<crate::controls::Pending>,
     pub control_row: usize,
+    /// What the launch update check did this run: the footer line and the Alerts
+    /// entry. The app never calls the API; the network lives in `src/update/`.
+    pub update_release: Option<crate::update::Status>,
+    /// A new build is installed and this process is the old binary, so the footer
+    /// asks for a restart.
+    pub update_restart: bool,
     /// Cap on cached rows per device, so a query for 30 days cannot grow memory.
     query_limit: usize,
     /// One-shot flag for the "writer behind" notice, so a saturated queue is
@@ -202,6 +208,8 @@ impl App {
             sent_commands: Vec::new(),
             pending_control: None,
             control_row: 0,
+            update_release: None,
+            update_restart: false,
             query_limit: 4096,
             history_behind_reported: false,
             last_query: None,
@@ -396,6 +404,13 @@ impl App {
                 self.notices.push_back(n);
                 if self.notices.len() > 200 {
                     self.notices.pop_front();
+                }
+            }
+            Update::Release(status) => {
+                let applied = matches!(status, crate::update::Status::Applied { .. });
+                self.update_release = Some(status);
+                if applied {
+                    self.update_restart = true;
                 }
             }
         }

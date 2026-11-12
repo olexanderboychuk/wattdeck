@@ -37,6 +37,9 @@ pub enum Update {
         code: String,
         message: String,
     },
+    /// The launch update check's result for this run. The network lives in
+    /// `src/update/`; the UI receives only this, so the UI never calls the API.
+    Release(crate::update::Status),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
