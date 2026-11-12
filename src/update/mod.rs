@@ -136,7 +136,7 @@ pub fn sha256_of(bytes: &[u8]) -> String {
 /// The live check: the latest release, the asset's SHA256 verified against
 /// `SHA256SUMS.txt`, then the install into `target`. `current` is the caller's
 /// version — `env!("CARGO_PKG_VERSION")` — never read from the running binary.
-pub async fn check(
+pub async fn run(
     cfg: &UpdateConfig,
     current: &str,
     cache_dir: &Path,
@@ -542,7 +542,7 @@ mod tests {
     #[tokio::test]
     async fn the_live_check_of_the_released_version_is_one_request() {
         let dir = tempfile::tempdir().unwrap();
-        let status = check(
+        let status = run(
             &UpdateConfig::default(),
             env!("CARGO_PKG_VERSION"),
             &dir.path().join("cache"),
