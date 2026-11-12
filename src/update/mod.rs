@@ -61,6 +61,71 @@ pub fn launch_check(cfg: &UpdateConfig, no_update: bool, mock: bool, s: &Seams) 
     cfg.enabled && !no_update && (!mock || s.release_dir.is_some())
 }
 
+/// The asset for one target, and the binary name inside it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Target {
+    pub triple: &'static str,
+    pub ext: &'static str,
+    pub binary: &'static str,
+}
+
+/// The targets this project builds — `install.sh`'s table, the same words. A
+/// combination outside them is refused by name, so a user on an unsupported
+/// machine learns what exists, not a guess.
+pub fn target_for(os: &str, arch: &str) -> Result<Target, String> {
+    match (os, arch) {
+        ("linux", "x86_64") => Ok(Target {
+            triple: "x86_64-unknown-linux-gnu",
+            ext: "tar.gz",
+            binary: "wattdeck",
+        }),
+        ("macos", "aarch64") => Ok(Target {
+            triple: "aarch64-apple-darwin",
+            ext: "tar.gz",
+            binary: "wattdeck",
+        }),
+        ("windows", "x86_64") => Ok(Target {
+            triple: "x86_64-pc-windows-msvc",
+            ext: "zip",
+            binary: "wattdeck.exe",
+        }),
+        (os, arch) => Err(format!(
+            "no wattdeck build for {os} on {arch}. Built targets: x86_64-unknown-linux-gnu \
+             (Linux x86_64), aarch64-apple-darwin (macOS Apple silicon), \
+             x86_64-pc-windows-msvc (Windows x86_64)."
+        )),
+    }
+}
+
+pub fn target() -> Result<Target, String> {
+    target_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+pub fn asset_name(tag: &str, t: &Target) -> String {
+    format!("wattdeck-{}-{}.{}", tag, t.triple, t.ext)
+}
+
+/// `SHA256SUMS.txt` lines are `<hash>  <asset>`, which is what the release job
+/// writes. The hash for `asset`, lowercased, or `None` when the asset is not
+/// listed. A line with a third field is not a sums line, so it is not read.
+pub fn expected_hash(sums: &str, asset: &str) -> Option<String> {
+    for line in sums.lines() {
+        let mut fields = line.split_whitespace();
+        match (fields.next(), fields.next(), fields.next()) {
+            (Some(hash), Some(name), None) if name == asset => {
+                return Some(hash.to_lowercase());
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+pub fn sha256_of(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +173,74 @@ mod tests {
             ..Default::default()
         };
         assert!(!launch_check(&off_cfg, false, false, &seams));
+    }
+
+    #[test]
+    fn the_three_built_targets_are_the_installers_table() {
+        assert_eq!(
+            target_for("linux", "x86_64").unwrap().triple,
+            "x86_64-unknown-linux-gnu"
+        );
+        assert_eq!(
+            target_for("macos", "aarch64").unwrap().triple,
+            "aarch64-apple-darwin"
+        );
+        assert_eq!(
+            target_for("windows", "x86_64").unwrap().ext,
+            "zip",
+            "the Windows asset is a zip, as the release job packages it"
+        );
+        let refused = target_for("linux", "aarch64").unwrap_err();
+        assert!(
+            refused.contains("no wattdeck build for linux on aarch64"),
+            "{refused}"
+        );
+        assert!(refused.contains("x86_64-unknown-linux-gnu"), "{refused}");
+    }
+
+    #[test]
+    fn the_asset_name_is_the_release_jobs_pattern() {
+        let t = target_for("linux", "x86_64").unwrap();
+        assert_eq!(
+            asset_name("v0.3.0", &t),
+            "wattdeck-v0.3.0-x86_64-unknown-linux-gnu.tar.gz"
+        );
+        assert_eq!(t.binary, "wattdeck");
+        assert_eq!(
+            target_for("windows", "x86_64").unwrap().binary,
+            "wattdeck.exe"
+        );
+    }
+
+    #[test]
+    fn the_sums_line_for_the_asset_is_the_first_field() {
+        let sums = "aaa  wattdeck-v0.3.0-x86_64-unknown-linux-gnu.tar.gz\nbbb  SHA256SUMS.txt\n";
+        assert_eq!(
+            expected_hash(sums, "wattdeck-v0.3.0-x86_64-unknown-linux-gnu.tar.gz"),
+            Some("aaa".to_string())
+        );
+        assert_eq!(
+            expected_hash(sums, "SHA256SUMS.txt"),
+            Some("bbb".to_string())
+        );
+        assert_eq!(
+            expected_hash(sums, "wattdeck-v9.9.9-x86_64-unknown-linux-gnu.tar.gz"),
+            None
+        );
+        // A line with a third field is not a sums line.
+        assert_eq!(expected_hash("aaa  asset  extra\n", "asset"), None);
+        assert_eq!(
+            expected_hash("AAA  asset\n", "asset"),
+            Some("aaa".to_string())
+        );
+    }
+
+    #[test]
+    fn the_hash_of_the_empty_input_is_the_published_one() {
+        // The published SHA256 of zero bytes; the string is the value, not a claim.
+        assert_eq!(
+            sha256_of(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 }
