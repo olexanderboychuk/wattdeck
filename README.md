@@ -12,7 +12,7 @@ One Rust binary: no web app, no Electron, no daemon, no cloud.
 **wattdeck** is the app; EcoFlow is the vendor of the devices it monitors. The
 header carries the app name only.
 
-![wattdeck's dashboard, mock mode: the header with the MOCK badge and both transport states, the device strip, the DELTA 2 Max overview with charge percentage, gauge, remaining and capacity, health, cycles, temperature and the runtime row reading `time full in 57m`, the power-flow panel with solar, AC, DC, USB and 12V channels, the power-history chart, and the BMS diagnostics beside the connection panel](docs/screenshots/dashboard.png)
+![wattdeck's dashboard, mock mode: the header with the MOCK badge and both transport states, the device strip, the DELTA 2 Max overview with charge percentage, gauge, remaining and capacity, health, cycles, temperature and the runtime row reading `time full in 58m`, the power-flow panel with solar, AC, DC, USB and 12V channels, the power-history chart, and the BMS diagnostics beside the connection panel](docs/screenshots/dashboard.png)
 
 ## Contents
 
@@ -156,9 +156,10 @@ shows it as offline and never displays invented values for it. History lives in 
 local SQLite database: one sample per device every 5 s (configurable). A report with
 the same numbers as the last one is not stored twice, and the last identical sample
 is stored again every 10 minutes, so history shows that a station at rest is still
-answering. The ranges are 15 m, 1 h, 6 h and 24 h; the chart draws as soon as there
-is one sample and never fills a gap with an estimate. A restart loads the rows back
-from the database. 90-day retention. Mock runs never write history.
+answering. The ranges are 15 min, 1 hour, 6 hours, 24 hours, 7 days and 30 days;
+the chart draws as soon as there is one sample and never fills a gap with an
+estimate. A restart loads the rows back from the database. 90-day retention. Mock
+runs never write history.
 
 ## Keys and safety
 
