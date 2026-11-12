@@ -82,7 +82,7 @@ file has credential values masked.
 | --- | --- | --- |
 | `enabled` | `true` | SQLite history. Mock runs never write history, whatever this says |
 | `retention_days` | `90` | **≥ 1.** Purged on the writer's cadence |
-| `sample_interval_seconds` | `10` | **≥ 1.** One sample per device |
+| `sample_interval_seconds` | `5` | **≥ 1.** One sample per device. A report with the same numbers as the last is not stored twice; the last identical sample is stored again every 10 minutes |
 | `memory_samples` | `120` | **≥ 8.** In-memory sparkline window per device |
 
 ## `[analytics]`

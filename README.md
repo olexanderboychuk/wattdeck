@@ -12,7 +12,7 @@ One Rust binary: no web app, no Electron, no daemon, no cloud.
 **wattdeck** is the app; EcoFlow is the vendor of the devices it monitors. The
 header carries the app name only.
 
-![wattdeck's dashboard, mock mode: the MOCK badge and the connection line in the header, the DELTA 2 Max panel with charge percentage, remaining and capacity in kWh, health, temperature, runtime, cell voltage range and cycle count, the power-flow panel with solar, AC, DC and USB ports, the distribution bars, and the power-history chart](docs/screenshots/dashboard.png)
+![wattdeck's dashboard, mock mode: the header with the MOCK badge and both transport states, the device strip, the DELTA 2 Max overview with charge percentage, gauge, remaining and capacity, health, cycles, temperature and the runtime row reading `time full in 57m`, the power-flow panel with solar, AC, DC, USB and 12V channels, the power-history chart, and the BMS diagnostics beside the connection panel](docs/screenshots/dashboard.png)
 
 ## Contents
 
@@ -99,16 +99,30 @@ the credential template **only** when no secret service is present.
 
 ## What you see
 
-**Dashboard.** One screen per device: charge percentage, remaining and capacity
-in kWh, health, temperature, computed runtime, cell voltage range, cycle count,
-power in and out, the power-flow panel (solar, AC, DC, USB 1, USB-C, 12V), the
-distribution bars, and the power-history chart. The header line carries the
-connection states of both transports — `REST ONLINE` and `MQTT ONLINE` are
-independent, and a degraded transport is shown as degraded, not as online.
-Mock screens carry a `MOCK` badge, so a simulated number is never mistaken for
-a real reading.
+**Dashboard.** Five regions: a two-line header (name, version, `MOCK` badge, each
+transport's state in plain words and colour, device count, the selected device,
+freshness, active alerts and the clock), a device strip, the device overview beside
+the power-flow panel, the power-history chart, and BMS diagnostics beside the
+connection panel. The overview carries charge percentage, the gauge, remaining and
+capacity in kWh, health, cycles, temperature and the runtime. The runtime row says
+what the number means: `full in 58m` while charging, `runs 1h 12m` while
+discharging, `idle` at rest, `full` at the charge limit, and `state unknown` when
+nothing has been reported. Every number is marked with where it came from —
+`(device)` for a value the device reported, `(calc)` for what the app computed,
+`--` for a channel the device supports but did not send, `n/a` for a channel this
+model does not have. The layout is responsive: panels keep content minimums, spare
+rows go to the history chart, and a terminal narrower than 72 columns stacks the
+panels.
 
-![The alerts screen, mock mode: the credential-state line telling you to run wattdeck setup, and the MQTT reconnect alert under the header's DEGRADED connection line](docs/screenshots/alerts.png)
+**Devices.** One row per device: its state as the app can defend it (`online`,
+`connecting`, `stale`, `offline`, `not supported`, `sign-in failed`), charge
+percentage, input and output power, the masked serial, and the transport the data
+came on. `enter` opens the device screen, which carries the state, when the live
+feed and the cloud last answered, how many properties the device has sent, its
+productType, the capabilities verified for that model, the cloud's refusal text if
+it refused, the controls the model supports, and the raw property inspector.
+
+![The alerts screen, mock mode: the credential-state line telling you to run wattdeck setup, and the MQTT reconnect alert under the header's connection line](docs/screenshots/alerts.png)
 
 **Alerts.** Low and critical battery, high temperature, high output above the
 configured limit, disconnects, API refusals, storage problems, command replies,
@@ -138,9 +152,13 @@ inspector, so a value the app does not know how to display is never hidden.
 The normalizer scales BMS arrays to volts and amps and maps the device's
 property keys into one state; unknown keys pass through. A RIVER mini on the
 same account is offline, and its property map returns `code 1006` — the app
-shows it as offline and never displays invented values for it. History lives in
-a local SQLite database: one sample per device every 10 s (configurable),
-90-day retention. Mock runs never write history.
+shows it as offline and never displays invented values for it. History lives in a
+local SQLite database: one sample per device every 5 s (configurable). A report with
+the same numbers as the last one is not stored twice, and the last identical sample
+is stored again every 10 minutes, so history shows that a station at rest is still
+answering. The ranges are 15 m, 1 h, 6 h and 24 h; the chart draws as soon as there
+is one sample and never fills a gap with an estimate. A restart loads the rows back
+from the database. 90-day retention. Mock runs never write history.
 
 ## Keys and safety
 

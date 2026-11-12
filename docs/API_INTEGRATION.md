@@ -132,6 +132,33 @@ An envelope `online: 0` with telemetry streaming in does not make the app show
 the device offline: the app sets `snap.online = true` when the device is pushing
 data. Empty arrays (`cellVol: []`) are not measurements.
 
+## Runtime counters
+
+Several counters report runtime, in minutes, and they answer different
+questions depending on what the station is doing. Live on a charging DELTA 2
+Max `[LIVE]`: `bms_emsStatus.chgRemainTime` = 7,
+`bms_emsStatus.dsgRemainTime` = 5999, `bms_bmsStatus.remainTime` signed
+(positive is charge time, negative is discharge time), and `pd.remainTime`
+behind the LCD.
+
+- The charging counter is the one that answers "how long to full". The
+  discharge counter does not answer that question, and the app never uses it as
+  a time-to-full `[LIVE]`.
+- 5999 minutes is 99 h 59 m, the largest value this project has seen on a
+  station that was charging `[LIVE]`. A station that is charging cannot have
+  99 hours of discharge left, so the app treats 5999 as the counter's ceiling:
+  the raw number stays on the diagnostics screen, it is never shown as a
+  runtime, and the charging estimate comes from `chgRemainTime` or from the
+  measured charge power over the last 15 minutes.
+- **not verified**: whether 5999 is a fixed maximum the device sends when it
+  has no estimate, a saturated counter, or a genuine 99 h 59 m estimate at a
+  light load. Telling those apart needs a station at a known load for hours,
+  which this project has not run. The code marks the value as the ceiling,
+  which is the claim the evidence supports, and preserves the raw number.
+- Idle and full: both counters belong to the other state, so the app shows
+  `idle` or `full` and no number. The state comes from the ammeter and SOC,
+  not from the counters `[LIVE]`.
+
 ## Set commands
 
 Envelope the live device answers `[LIVE]`:
